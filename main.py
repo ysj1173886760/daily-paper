@@ -16,12 +16,14 @@ from functools import wraps
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import ast
 
 ARXIV_URL = "http://arxiv.org/"
 
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 CHAT_MODEL_NAME = os.getenv("CHAT_MODEL_NAME")
+FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL")
 
 FILTER_FILE_NAME = "data/daily_papers.parquet"
 
@@ -165,22 +167,42 @@ def summarize_paper(lm, paper_text) -> str:
     # 修正冒号为英文格式，使用标准签名语法
     prompt = f"用中文帮我介绍一下这篇文章: {paper_text}"
     summary = lm(prompt)
-    return summary
+    return summary[0]
 
 @sync_timer
 def extract_text_from_pdf(pdf_path):
-    """提取PDF文本内容"""
+    """提取PDF文本内容（增加双解析引擎）"""
     try:
+        # 尝试使用PyPDF2解析
         with open(pdf_path, 'rb') as f:
             reader = PdfReader(f)
             return '\n'.join([page.extract_text() for page in reader.pages])
-    except Exception as e:
-        print(f"Error reading {pdf_path}: {str(e)}")
-        return ""
+    except Exception as pdf_error:
+        print(f"PyPDF2解析失败，尝试备用解析引擎: {pdf_path}")
+        try:
+            # 备选方案1：使用pdfplumber（需要安装）
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                return '\n'.join([page.extract_text() for page in pdf.pages])
+        except Exception as plumber_error:
+            try:
+                # 备选方案2：使用PyMuPDF（需要安装）
+                import fitz  # PyMuPDF的导入名称
+                doc = fitz.open(pdf_path)
+                return '\n'.join([page.get_text() for page in doc])
+            except Exception as fitz_error:
+                error_msg = (
+                    f"PDF解析全部失败: {pdf_path}\n"
+                    f"PyPDF2错误: {str(pdf_error)}\n"
+                    f"pdfplumber错误: {str(plumber_error)}\n"
+                    f"PyMuPDF错误: {str(fitz_error)}"
+                )
+                print(error_msg)
+                return ""
 
 @sync_timer
-def download_paper(url: str, paper_id: str, save_dir: str):
-    """下载并保存PDF论文"""
+def download_paper(url: str, paper_id: str, save_dir: str, retries=3):
+    """下载并保存PDF论文（增加重试机制）"""
     os.makedirs(save_dir, exist_ok=True)
     file_path = os.path.join(save_dir, f"{paper_id}.pdf")
     
@@ -188,16 +210,36 @@ def download_paper(url: str, paper_id: str, save_dir: str):
         print(f"文件已存在，跳过下载: {paper_id}")
         return
     
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"成功下载: {paper_id}")
-    except Exception as e:
-        print(f"下载失败 {paper_id}: {str(e)}")
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            # 增加文件完整性校验
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    downloaded += len(chunk)
+                    f.write(chunk)
+                    
+            # 简单校验文件完整性
+            if total_size > 0 and downloaded != total_size:
+                raise IOError("文件大小不匹配，可能下载不完整")
+                
+            print(f"成功下载: {paper_id}")
+            return
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"下载失败 {paper_id}，第{attempt+1}次重试...")
+                time.sleep(2)
+            else:
+                print(f"下载最终失败 {paper_id}: {str(e)}")
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
 
 async def process_single_paper(executor, lm, paper, row_index):
     """并发处理单篇论文的异步任务"""
@@ -216,13 +258,63 @@ async def process_single_paper(executor, lm, paper, row_index):
     
     return row_index, summary
 
+from tenacity import retry, wait_exponential, stop_after_attempt
+
+@retry(stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=10))
+def send_to_feishu_with_retry(message):
+    """带重试机制的飞书消息推送"""
+    response = requests.post(
+        FEISHU_WEBHOOK_URL,
+        json=message,
+        timeout=10
+    )
+    response.raise_for_status()
+
+def send_to_feishu(paper: ArxivPaper, summary: str):
+    """发送论文信息到飞书机器人"""
+    if not FEISHU_WEBHOOK_URL:
+        logging.error("飞书Webhook地址未配置")
+        return
+
+    formatted_summary = summary.replace("\\n", "\n")
+    
+    message = {
+        "msg_type": "interactive",
+        "card": {
+            "elements": [{
+                "tag": "div",
+                "text": {
+                    "content": f"**{paper['paper_title']}**\n"
+                               f"**更新时间**: {paper['update_time']}\n\n"
+                               f"👤 {paper['paper_authors']}\n\n"
+                               f"💡 AI总结：{formatted_summary}...\n\n"
+                               f"---\n"
+                               f"📎 [论文原文]({paper['paper_url']})",
+                    "tag": "lark_md"
+                }
+            }],
+            "header": {
+                "title": {
+                    "content": "📄 新论文推荐",
+                    "tag": "plain_text"
+                }
+            }
+        }
+    }
+
+    try:
+        send_to_feishu_with_retry(message)
+        logging.info(f"飞书推送成功: {paper['paper_id']}")
+    except Exception as e:
+        logging.error(f"飞书推送最终失败: {str(e)}")
+
 if __name__ == "__main__":
     # 配置dspy
     lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
     dspy.configure(lm=lm)
 
     # 获取今日论文
-    new_papers = get_daily_papers("RAG", 20)
+    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 200)
 
     # 过滤已存在论文
     filtered_papers = filter_existing_papers(new_papers)
@@ -274,7 +366,27 @@ if __name__ == "__main__":
         df.at[index, 'summary'] = summary
 
     # 保存更新后的DataFrame
-    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')  # 新增保存操作
+    # df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+    
+    # 新增飞书推送（只推送本次处理的论文）
+    # 按update_time从旧到新排序
+    sorted_papers = df.loc[papers_without_summary.index].sort_values('update_time', ascending=True)
+    
+    for index, row in sorted_papers.iterrows():
+        if pd.notna(row['summary']):
+            paper = ArxivPaper(
+                paper_id=row['paper_id'],
+                paper_title=row['paper_title'],
+                paper_url=row['paper_url'],
+                paper_abstract=row['paper_abstract'],
+                paper_authors=row['paper_authors'],
+                paper_first_author=row['paper_first_author'],
+                primary_category=row['primary_category'],
+                publish_time=row['publish_time'],
+                update_time=row['update_time'],
+                comments=row['comments']
+            )
+            send_to_feishu(paper, row['summary'])
 
     # 示例：分析第一篇过滤后的论文是否属于特定领域
     # if filtered_papers:

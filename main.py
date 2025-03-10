@@ -24,7 +24,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 CHAT_MODEL_NAME = os.getenv("CHAT_MODEL_NAME")
 FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL")
 
-FILTER_FILE_NAME = "data/daily_papers.parquet"
+META_FILE_NAME = "data/daily_papers.parquet"
 
 def sync_timer(func):
     @wraps(func)
@@ -104,7 +104,7 @@ def get_daily_papers(query, max_results) -> dict[str, ArxivPaper]:
 def save_to_parquet(papers: dict[str, ArxivPaper]):
     """保存论文数据到parquet文件（增加pushed字段）"""
     Path("data").mkdir(exist_ok=True)
-    filename = FILTER_FILE_NAME
+    filename = META_FILE_NAME
     
     # 读取已有数据（如果文件存在）
     existing_df = pd.DataFrame()
@@ -198,7 +198,7 @@ def push_to_feishu(df: pd.DataFrame) -> pd.DataFrame:
     # 批量更新推送状态
     if success_indices:
         df.loc[success_indices, 'pushed'] = True
-        df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+        df.to_parquet(META_FILE_NAME, engine='pyarrow')
         logging.info(f"成功更新{len(success_indices)}篇论文推送状态")
     
     return df
@@ -206,7 +206,7 @@ def push_to_feishu(df: pd.DataFrame) -> pd.DataFrame:
 def filter_existing_papers(new_papers: dict[str, ArxivPaper]) -> dict[str, ArxivPaper]:
     """过滤已存在的论文（单文件版本）"""
     existing_ids = set()
-    filename = FILTER_FILE_NAME
+    filename = META_FILE_NAME
     
     # 检查并读取单个文件
     if Path(filename).exists():
@@ -420,28 +420,12 @@ def reset_recent_pushed_status(df: pd.DataFrame, days: int = 7) -> pd.DataFrame:
     df.loc[mask, 'pushed'] = False
     
     # 保存更新到文件
-    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+    df.to_parquet(META_FILE_NAME, engine='pyarrow')
     logging.info(f"已重置最近{days}天内{reset_count}篇论文的推送状态")
     return df
 
-# 主流程修改
-if __name__ == "__main__":
-    # 配置dspy
-    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
-    dspy.configure(lm=lm)
-
-    # 获取今日论文
-    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 10)
-
-    # 过滤已存在论文
-    filtered_papers = filter_existing_papers(new_papers)
-
-    save_to_parquet(filtered_papers)
-    print(f"保存了{len(filtered_papers)}篇新论文")
-    
-    # 读取保存的论文数据
-    df = pd.read_parquet(FILTER_FILE_NAME)
-
+def process_papers_and_generate_summaries(lm, df: pd.DataFrame) -> pd.DataFrame:
+    """处理论文下载并生成摘要（返回更新后的DataFrame）"""
     # 添加缺失的summary列（兼容旧数据）
     if 'summary' not in df.columns:
         df['summary'] = None
@@ -484,8 +468,34 @@ if __name__ == "__main__":
     for index, summary in results:
         df.at[index, 'summary'] = summary
 
+    return df
+
+# 主流程修改
+if __name__ == "__main__":
+    # 配置dspy
+    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
+    dspy.configure(lm=lm)
+
+    # 获取今日论文
+    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 10)
+
+    # 过滤已存在论文
+    filtered_papers = filter_existing_papers(new_papers)
+
+    save_to_parquet(filtered_papers)
+    print(f"保存了{len(filtered_papers)}篇新论文")
+    
+    # 读取保存的论文数据
+    df = pd.read_parquet(META_FILE_NAME)
+
+    # 处理论文并生成摘要
+    df = process_papers_and_generate_summaries(lm, df)
+
+    # TODO(ysj): filter paper by user specified summary
+    
     # 保存更新后的DataFrame
-    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+    df.to_parquet(META_FILE_NAME, engine='pyarrow')
+    
     # df = reset_recent_pushed_status(df, 7)
     
     push_to_feishu(df)

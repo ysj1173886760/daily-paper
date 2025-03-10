@@ -103,7 +103,7 @@ def get_daily_papers(query, max_results) -> dict[str, ArxivPaper]:
     return paper_result
 
 def save_to_parquet(papers: dict[str, ArxivPaper]):
-    """保存论文数据到parquet文件（增量写入）"""
+    """保存论文数据到parquet文件（增加pushed字段）"""
     Path("data").mkdir(exist_ok=True)
     filename = FILTER_FILE_NAME
     
@@ -115,17 +115,183 @@ def save_to_parquet(papers: dict[str, ArxivPaper]):
         except Exception as e:
             logging.warning(f"Error reading existing file: {str(e)}")
     
-    # 合并新旧数据时添加summary字段
+    # 合并新旧数据时添加pushed字段
     new_df = pd.DataFrame.from_dict(papers, orient='index')
-    new_df['summary'] = None  # 新增summary列初始化
+    new_df['summary'] = None
+    new_df['pushed'] = False  # 新增推送状态字段
     combined_df = pd.concat([existing_df, new_df], ignore_index=False)
     
-    # 去重（保留最后出现的记录）
+    # 去重（保留最后出现的记录）并保存
     combined_df = combined_df[~combined_df.index.duplicated(keep='last')]
-    
-    # 保存更新后的数据
     combined_df.to_parquet(filename, engine='pyarrow')
-    logging.info(f"Saved {len(combined_df)} papers (added {len(papers)} new) to {filename}")
+
+def send_to_feishu(paper: ArxivPaper, summary: str) -> bool:
+    """发送单篇论文到飞书（返回是否成功）"""
+    if not FEISHU_WEBHOOK_URL:
+        logging.error("飞书Webhook地址未配置")
+        return
+
+    formatted_summary = summary.replace("\\n", "\n")
+    
+    message = {
+        "msg_type": "interactive",
+        "card": {
+            "elements": [{
+                "tag": "div",
+                "text": {
+                    "content": f"**{paper['paper_title']}**\n"
+                               f"**更新时间**: {paper['update_time']}\n\n"
+                               f"👤 {paper['paper_authors']}\n\n"
+                               f"💡 AI总结：{formatted_summary}...\n\n"
+                               f"---\n"
+                               f"📎 [论文原文]({paper['paper_url']})",
+                    "tag": "lark_md"
+                }
+            }],
+            "header": {
+                "title": {
+                    "content": "📄 新论文推荐",
+                    "tag": "plain_text"
+                }
+            }
+        }
+    }
+
+    try:
+        send_to_feishu_with_retry(message)
+        logging.info(f"飞书推送成功: {paper['paper_id']}")
+        return True
+    except Exception as e:
+        logging.error(f"飞书推送失败: {str(e)}")
+        return False
+
+def push_to_feishu(df: pd.DataFrame) -> pd.DataFrame:
+    """批量推送未发送论文并更新状态"""
+    # 筛选需要推送的论文
+    to_push = df[(df['pushed'] == False) & 
+                (df['summary'].notna())].copy()
+    
+    if to_push.empty:
+        logging.info("没有需要推送的新论文")
+        return df
+    
+    # 按时间排序（旧到新）
+    sorted_df = to_push.sort_values('update_time', ascending=True)
+    
+    # 批量处理推送
+    success_indices = []
+    for index, row in sorted_df.iterrows():
+        paper = ArxivPaper(
+            paper_id=row['paper_id'],
+            paper_title=row['paper_title'],
+            paper_url=row['paper_url'],
+            paper_abstract=row['paper_abstract'],
+            paper_authors=row['paper_authors'],
+            paper_first_author=row['paper_first_author'],
+            primary_category=row['primary_category'],
+            publish_time=row['publish_time'],
+            update_time=row['update_time'],
+            comments=row['comments']
+        )
+        if send_to_feishu(paper, row['summary']):
+            success_indices.append(index)
+    
+    # 批量更新推送状态
+    if success_indices:
+        df.loc[success_indices, 'pushed'] = True
+        df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+        logging.info(f"成功更新{len(success_indices)}篇论文推送状态")
+    
+    return df
+
+# 主流程修改
+if __name__ == "__main__":
+    # 配置dspy
+    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
+    dspy.configure(lm=lm)
+
+    # 获取今日论文
+    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 200)
+
+    # 过滤已存在论文
+    filtered_papers = filter_existing_papers(new_papers)
+
+    save_to_parquet(filtered_papers)
+    print(f"保存了{len(filtered_papers)}篇新论文")
+    
+    # 读取保存的论文数据
+    df = pd.read_parquet(FILTER_FILE_NAME)
+
+    # 添加缺失的summary列（兼容旧数据）
+    if 'summary' not in df.columns:
+        df['summary'] = None
+
+    # 过滤掉已经有summary字段的论文
+    papers_without_summary = df[df['summary'].isna()]
+
+    print(f"需要处理{len(papers_without_summary)}篇新论文")
+
+    # 创建线程池执行器
+    executor = ThreadPoolExecutor(max_workers=20)
+    # 修复事件循环创建方式
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # 准备所有任务
+    tasks = []
+    for index, row in papers_without_summary.iterrows():
+        paper = ArxivPaper(
+            paper_id=row['paper_id'],
+            paper_title=row['paper_title'],
+            paper_url=row['paper_url'],
+            paper_abstract=row['paper_abstract'],
+            paper_authors=row['paper_authors'],
+            paper_first_author=row['paper_first_author'],
+            primary_category=row['primary_category'],
+            publish_time=row['publish_time'],
+            update_time=row['update_time'],
+            comments=row['comments']
+        )
+        tasks.append(process_single_paper(executor, lm, paper, index))
+    
+    # 使用tqdm显示并发任务进度
+    from tqdm.asyncio import tqdm_asyncio
+    results = loop.run_until_complete(
+        tqdm_asyncio.gather(*tasks, desc="并发处理论文", total=len(tasks))
+    )
+    
+    # 批量更新结果
+    for index, summary in results:
+        df.at[index, 'summary'] = summary
+
+    # 保存更新后的DataFrame
+    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+    
+    # 新增飞书推送（只推送本次处理的论文）
+    # 按update_time从旧到新排序
+    sorted_papers = df.loc[papers_without_summary.index].sort_values('update_time', ascending=True)
+    
+    for index, row in sorted_papers.iterrows():
+        if pd.notna(row['summary']):
+            paper = ArxivPaper(
+                paper_id=row['paper_id'],
+                paper_title=row['paper_title'],
+                paper_url=row['paper_url'],
+                paper_abstract=row['paper_abstract'],
+                paper_authors=row['paper_authors'],
+                paper_first_author=row['paper_first_author'],
+                primary_category=row['primary_category'],
+                publish_time=row['publish_time'],
+                update_time=row['update_time'],
+                comments=row['comments']
+            )
+            send_to_feishu(paper, row['summary'], index)  # 传入df索引
+
+    # 示例：分析第一篇过滤后的论文是否属于特定领域
+    # if filtered_papers:
+    #     first_paper = next(iter(filtered_papers.values()))
+    #     is_in_domain = analyze_paper(first_paper, "RAG")
+    #     print(f"第一篇论文是否属于RAG领域: {is_in_domain}")
 
 def filter_existing_papers(new_papers: dict[str, ArxivPaper]) -> dict[str, ArxivPaper]:
     """过滤已存在的论文（单文件版本）"""
@@ -162,14 +328,12 @@ def analyze_paper(paper: ArxivPaper, domain: str) -> bool:
     result = analysis(input_paper_text=paper['paper_abstract'], input_domain=domain)
     return result.output_domain
 
-@sync_timer
 def summarize_paper(lm, paper_text) -> str:
     # 修正冒号为英文格式，使用标准签名语法
     prompt = f"用中文帮我介绍一下这篇文章: {paper_text}"
     summary = lm(prompt)
     return summary[0]
 
-@sync_timer
 def extract_text_from_pdf(pdf_path):
     """提取PDF文本内容（增加双解析引擎）"""
     try:
@@ -200,7 +364,6 @@ def extract_text_from_pdf(pdf_path):
                 print(error_msg)
                 return ""
 
-@sync_timer
 def download_paper(url: str, paper_id: str, save_dir: str, retries=3):
     """下载并保存PDF论文（增加重试机制）"""
     os.makedirs(save_dir, exist_ok=True)
@@ -269,127 +432,3 @@ def send_to_feishu_with_retry(message):
         timeout=10
     )
     response.raise_for_status()
-
-def send_to_feishu(paper: ArxivPaper, summary: str):
-    """发送论文信息到飞书机器人"""
-    if not FEISHU_WEBHOOK_URL:
-        logging.error("飞书Webhook地址未配置")
-        return
-
-    formatted_summary = summary.replace("\\n", "\n")
-    
-    message = {
-        "msg_type": "interactive",
-        "card": {
-            "elements": [{
-                "tag": "div",
-                "text": {
-                    "content": f"**{paper['paper_title']}**\n"
-                               f"**更新时间**: {paper['update_time']}\n\n"
-                               f"👤 {paper['paper_authors']}\n\n"
-                               f"💡 AI总结：{formatted_summary}...\n\n"
-                               f"---\n"
-                               f"📎 [论文原文]({paper['paper_url']})",
-                    "tag": "lark_md"
-                }
-            }],
-            "header": {
-                "title": {
-                    "content": "📄 新论文推荐",
-                    "tag": "plain_text"
-                }
-            }
-        }
-    }
-
-    try:
-        send_to_feishu_with_retry(message)
-        logging.info(f"飞书推送成功: {paper['paper_id']}")
-    except Exception as e:
-        logging.error(f"飞书推送最终失败: {str(e)}")
-
-if __name__ == "__main__":
-    # 配置dspy
-    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
-    dspy.configure(lm=lm)
-
-    # 获取今日论文
-    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 200)
-
-    # 过滤已存在论文
-    filtered_papers = filter_existing_papers(new_papers)
-
-    save_to_parquet(filtered_papers)
-    print(f"保存了{len(filtered_papers)}篇新论文")
-    
-    # 读取保存的论文数据
-    df = pd.read_parquet(FILTER_FILE_NAME)
-
-    # 添加缺失的summary列（兼容旧数据）
-    if 'summary' not in df.columns:
-        df['summary'] = None
-
-    # 过滤掉已经有summary字段的论文
-    papers_without_summary = df[df['summary'].isna()]
-
-    # 创建线程池执行器
-    executor = ThreadPoolExecutor(max_workers=20)
-    # 修复事件循环创建方式
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    # 准备所有任务
-    tasks = []
-    for index, row in papers_without_summary.iterrows():
-        paper = ArxivPaper(
-            paper_id=row['paper_id'],
-            paper_title=row['paper_title'],
-            paper_url=row['paper_url'],
-            paper_abstract=row['paper_abstract'],
-            paper_authors=row['paper_authors'],
-            paper_first_author=row['paper_first_author'],
-            primary_category=row['primary_category'],
-            publish_time=row['publish_time'],
-            update_time=row['update_time'],
-            comments=row['comments']
-        )
-        tasks.append(process_single_paper(executor, lm, paper, index))
-    
-    # 使用tqdm显示并发任务进度
-    from tqdm.asyncio import tqdm_asyncio
-    results = loop.run_until_complete(
-        tqdm_asyncio.gather(*tasks, desc="并发处理论文", total=len(tasks))
-    )
-    
-    # 批量更新结果
-    for index, summary in results:
-        df.at[index, 'summary'] = summary
-
-    # 保存更新后的DataFrame
-    # df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
-    
-    # 新增飞书推送（只推送本次处理的论文）
-    # 按update_time从旧到新排序
-    sorted_papers = df.loc[papers_without_summary.index].sort_values('update_time', ascending=True)
-    
-    for index, row in sorted_papers.iterrows():
-        if pd.notna(row['summary']):
-            paper = ArxivPaper(
-                paper_id=row['paper_id'],
-                paper_title=row['paper_title'],
-                paper_url=row['paper_url'],
-                paper_abstract=row['paper_abstract'],
-                paper_authors=row['paper_authors'],
-                paper_first_author=row['paper_first_author'],
-                primary_category=row['primary_category'],
-                publish_time=row['publish_time'],
-                update_time=row['update_time'],
-                comments=row['comments']
-            )
-            send_to_feishu(paper, row['summary'])
-
-    # 示例：分析第一篇过滤后的论文是否属于特定领域
-    # if filtered_papers:
-    #     first_paper = next(iter(filtered_papers.values()))
-    #     is_in_domain = analyze_paper(first_paper, "RAG")
-    #     print(f"第一篇论文是否属于RAG领域: {is_in_domain}")

@@ -1,10 +1,9 @@
 import logging
 from typing import TypedDict, Optional
-import datetime
 import arxiv
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+import datetime
 import os
 from PyPDF2 import PdfReader
 import dspy
@@ -204,95 +203,6 @@ def push_to_feishu(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
-# 主流程修改
-if __name__ == "__main__":
-    # 配置dspy
-    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
-    dspy.configure(lm=lm)
-
-    # 获取今日论文
-    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 200)
-
-    # 过滤已存在论文
-    filtered_papers = filter_existing_papers(new_papers)
-
-    save_to_parquet(filtered_papers)
-    print(f"保存了{len(filtered_papers)}篇新论文")
-    
-    # 读取保存的论文数据
-    df = pd.read_parquet(FILTER_FILE_NAME)
-
-    # 添加缺失的summary列（兼容旧数据）
-    if 'summary' not in df.columns:
-        df['summary'] = None
-
-    # 过滤掉已经有summary字段的论文
-    papers_without_summary = df[df['summary'].isna()]
-
-    print(f"需要处理{len(papers_without_summary)}篇新论文")
-
-    # 创建线程池执行器
-    executor = ThreadPoolExecutor(max_workers=20)
-    # 修复事件循环创建方式
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    # 准备所有任务
-    tasks = []
-    for index, row in papers_without_summary.iterrows():
-        paper = ArxivPaper(
-            paper_id=row['paper_id'],
-            paper_title=row['paper_title'],
-            paper_url=row['paper_url'],
-            paper_abstract=row['paper_abstract'],
-            paper_authors=row['paper_authors'],
-            paper_first_author=row['paper_first_author'],
-            primary_category=row['primary_category'],
-            publish_time=row['publish_time'],
-            update_time=row['update_time'],
-            comments=row['comments']
-        )
-        tasks.append(process_single_paper(executor, lm, paper, index))
-    
-    # 使用tqdm显示并发任务进度
-    from tqdm.asyncio import tqdm_asyncio
-    results = loop.run_until_complete(
-        tqdm_asyncio.gather(*tasks, desc="并发处理论文", total=len(tasks))
-    )
-    
-    # 批量更新结果
-    for index, summary in results:
-        df.at[index, 'summary'] = summary
-
-    # 保存更新后的DataFrame
-    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
-    
-    # 新增飞书推送（只推送本次处理的论文）
-    # 按update_time从旧到新排序
-    sorted_papers = df.loc[papers_without_summary.index].sort_values('update_time', ascending=True)
-    
-    for index, row in sorted_papers.iterrows():
-        if pd.notna(row['summary']):
-            paper = ArxivPaper(
-                paper_id=row['paper_id'],
-                paper_title=row['paper_title'],
-                paper_url=row['paper_url'],
-                paper_abstract=row['paper_abstract'],
-                paper_authors=row['paper_authors'],
-                paper_first_author=row['paper_first_author'],
-                primary_category=row['primary_category'],
-                publish_time=row['publish_time'],
-                update_time=row['update_time'],
-                comments=row['comments']
-            )
-            send_to_feishu(paper, row['summary'], index)  # 传入df索引
-
-    # 示例：分析第一篇过滤后的论文是否属于特定领域
-    # if filtered_papers:
-    #     first_paper = next(iter(filtered_papers.values()))
-    #     is_in_domain = analyze_paper(first_paper, "RAG")
-    #     print(f"第一篇论文是否属于RAG领域: {is_in_domain}")
-
 def filter_existing_papers(new_papers: dict[str, ArxivPaper]) -> dict[str, ArxivPaper]:
     """过滤已存在的论文（单文件版本）"""
     existing_ids = set()
@@ -432,3 +342,158 @@ def send_to_feishu_with_retry(message):
         timeout=10
     )
     response.raise_for_status()
+
+def generate_daily_summary(lm, df: pd.DataFrame, target_date: datetime.date = None) -> str:
+    """生成指定日期的简报并推荐3篇论文"""
+    # 默认使用当天日期
+    target_date = target_date or datetime.date.today()
+    
+    # 筛选目标日期推送的论文
+    daily_papers = df[(df['update_time'] == target_date)]
+
+    if (len(daily_papers) == 0):
+        return None
+    
+    # 构建汇总文本
+    combined_text = "今日论文汇总：\n\n"
+    for counter, (idx, row) in enumerate(daily_papers.iterrows(), 1):  # 改用enumerate生成序号
+        combined_text += f"【论文{counter}】{row['paper_title']}\nAI总结：{row['summary']}...\n\n"
+    
+    # LLM生成简报
+    prompt = (
+        f"请将以下论文汇总信息整理成一份结构清晰的每日简报（使用中文）：\n{combined_text}\n"
+        "要求：\n1. 分领域总结研究趋势\n2. 用简洁的bullet points呈现\n3. 推荐3篇最值得阅读的论文并说明理由\n4. 领域相关趋势下列出相关论文标题\n5. 论文标题用英文表达\n"
+        "6.只输出分领域研究趋势总结和推荐阅读论文，不需要输出其他内容\n7.论文标题输出时不要省略"
+    )
+    return lm(prompt)[0]
+
+def push_daily_summary(lm, df: pd.DataFrame, target_date: datetime.date = None):
+    """推送指定日期的总结报告"""
+    daily_report = generate_daily_summary(lm, df, target_date)
+    if daily_report == None:
+      print(f"{target_date} 没有需要推送的日报")
+      return
+
+    print(f"\n=== {target_date or '每日'}简报 ===")
+    print(daily_report)
+    
+    if FEISHU_WEBHOOK_URL:
+        target_date_display = target_date or datetime.date.today()
+        message = {
+            "msg_type": "interactive",
+            "card": {
+                "elements": [{
+                    "tag": "div",
+                    "text": {
+                        "content": f"📅 AI论文简报({target_date_display}){daily_report}",
+                        "tag": "lark_md"
+                    }
+                }],
+                "header": {
+                    "title": {
+                        "content": f"{target_date_display} 论文日报",
+                        "tag": "plain_text"
+                    }
+                }
+            }
+        }
+        send_to_feishu_with_retry(message)
+
+def reset_recent_pushed_status(df: pd.DataFrame, days: int = 7) -> pd.DataFrame:
+    """重置最近N天论文的推送状态（用于重复推送）
+    
+    Args:
+        df: 论文数据集
+        days: 需要重置状态的天数范围（默认最近7天）
+    
+    Returns:
+        更新后的DataFrame
+    """
+    # 计算日期范围
+    cutoff_date = datetime.date.today() - datetime.timedelta(days=days)
+    
+    # 筛选需要重置的记录（使用loc避免链式赋值警告）
+    mask = df['update_time'] >= cutoff_date
+    reset_count = df.loc[mask, 'pushed'].sum()
+    
+    # 执行状态重置
+    df.loc[mask, 'pushed'] = False
+    
+    # 保存更新到文件
+    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+    logging.info(f"已重置最近{days}天内{reset_count}篇论文的推送状态")
+    return df
+
+# 主流程修改
+if __name__ == "__main__":
+    # 配置dspy
+    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
+    dspy.configure(lm=lm)
+
+    # 获取今日论文
+    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 10)
+
+    # 过滤已存在论文
+    filtered_papers = filter_existing_papers(new_papers)
+
+    save_to_parquet(filtered_papers)
+    print(f"保存了{len(filtered_papers)}篇新论文")
+    
+    # 读取保存的论文数据
+    df = pd.read_parquet(FILTER_FILE_NAME)
+
+    # 添加缺失的summary列（兼容旧数据）
+    if 'summary' not in df.columns:
+        df['summary'] = None
+
+    # 过滤掉已经有summary字段的论文
+    papers_without_summary = df[df['summary'].isna()]
+
+    print(f"需要处理{len(papers_without_summary)}篇新论文")
+
+    # 创建线程池执行器
+    executor = ThreadPoolExecutor(max_workers=20)
+    # 修复事件循环创建方式
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # 准备所有任务
+    tasks = []
+    for index, row in papers_without_summary.iterrows():
+        paper = ArxivPaper(
+            paper_id=row['paper_id'],
+            paper_title=row['paper_title'],
+            paper_url=row['paper_url'],
+            paper_abstract=row['paper_abstract'],
+            paper_authors=row['paper_authors'],
+            paper_first_author=row['paper_first_author'],
+            primary_category=row['primary_category'],
+            publish_time=row['publish_time'],
+            update_time=row['update_time'],
+            comments=row['comments']
+        )
+        tasks.append(process_single_paper(executor, lm, paper, index))
+    
+    # 使用tqdm显示并发任务进度
+    from tqdm.asyncio import tqdm_asyncio
+    results = loop.run_until_complete(
+        tqdm_asyncio.gather(*tasks, desc="并发处理论文", total=len(tasks))
+    )
+    
+    # 批量更新结果
+    for index, summary in results:
+        df.at[index, 'summary'] = summary
+
+    # 保存更新后的DataFrame
+    df.to_parquet(FILTER_FILE_NAME, engine='pyarrow')
+    # df = reset_recent_pushed_status(df, 7)
+    
+    push_to_feishu(df)
+    
+    # 替换原有的每日总结代码
+    today = datetime.date.today()
+    # 遍历过去一周的每一天
+    for i in range(6, -1, -1):
+        # 计算过去第 i 天的日期
+        past_day = today - datetime.timedelta(days=i)
+        push_daily_summary(lm, df, past_day)

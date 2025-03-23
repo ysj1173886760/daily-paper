@@ -16,6 +16,7 @@ import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import ast
+import argparse
 
 ARXIV_URL = "http://arxiv.org/"
 
@@ -23,8 +24,7 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 CHAT_MODEL_NAME = os.getenv("CHAT_MODEL_NAME")
 FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL")
-
-META_FILE_NAME = "data/daily_papers.parquet"
+MAX_PAPER_TEXT_LENGTH = 128000
 
 def sync_timer(func):
     @wraps(func)
@@ -101,16 +101,15 @@ def get_daily_papers(query, max_results) -> dict[str, ArxivPaper]:
 
     return paper_result
 
-def save_to_parquet(papers: dict[str, ArxivPaper]):
+def save_to_parquet(papers: dict[str, ArxivPaper], meta_file: str):
     """保存论文数据到parquet文件（增加pushed字段）"""
     Path("data").mkdir(exist_ok=True)
-    filename = META_FILE_NAME
     
     # 读取已有数据（如果文件存在）
     existing_df = pd.DataFrame()
-    if Path(filename).exists():
+    if Path(meta_file).exists():
         try:
-            existing_df = pd.read_parquet(filename)
+            existing_df = pd.read_parquet(meta_file)
         except Exception as e:
             logging.warning(f"Error reading existing file: {str(e)}")
     
@@ -122,7 +121,7 @@ def save_to_parquet(papers: dict[str, ArxivPaper]):
     
     # 去重（保留最后出现的记录）并保存
     combined_df = combined_df[~combined_df.index.duplicated(keep='last')]
-    combined_df.to_parquet(filename, engine='pyarrow')
+    combined_df.to_parquet(meta_file, engine='pyarrow')
 
 def send_to_feishu(paper: ArxivPaper, summary: str) -> bool:
     """发送单篇论文到飞书（返回是否成功）"""
@@ -164,7 +163,7 @@ def send_to_feishu(paper: ArxivPaper, summary: str) -> bool:
         logging.error(f"飞书推送失败: {str(e)}")
         return False
 
-def push_to_feishu(df: pd.DataFrame) -> pd.DataFrame:
+def push_to_feishu(df: pd.DataFrame, meta_file: str) -> pd.DataFrame:
     """批量推送未发送论文并更新状态"""
     # 筛选需要推送的论文
     to_push = df[(df['pushed'] == False) & 
@@ -198,26 +197,23 @@ def push_to_feishu(df: pd.DataFrame) -> pd.DataFrame:
     # 批量更新推送状态
     if success_indices:
         df.loc[success_indices, 'pushed'] = True
-        df.to_parquet(META_FILE_NAME, engine='pyarrow')
+        df.to_parquet(meta_file, engine='pyarrow')
         logging.info(f"成功更新{len(success_indices)}篇论文推送状态")
     
     return df
 
-def filter_existing_papers(new_papers: dict[str, ArxivPaper]) -> dict[str, ArxivPaper]:
-    """过滤已存在的论文（单文件版本）"""
+def filter_existing_papers(new_papers: dict[str, ArxivPaper], meta_file: str) -> dict[str, ArxivPaper]:
+    """过滤已存在的论文（参数化版本）"""
     existing_ids = set()
-    filename = META_FILE_NAME
     
-    # 检查并读取单个文件
-    if Path(filename).exists():
+    if Path(meta_file).exists():
         try:
-            df = pd.read_parquet(filename)
+            df = pd.read_parquet(meta_file)
             if not df.empty and 'paper_id' in df.columns:
                 existing_ids.update(df['paper_id'].tolist())
         except Exception as e:
-            logging.warning(f"Error reading {filename}: {str(e)}")
+            logging.warning(f"Error reading {meta_file}: {str(e)}")
     
-    # 过滤新论文
     return {k: v for k, v in new_papers.items() if v['paper_id'] not in existing_ids}
 
 class PaperAnalysis(dspy.Signature):
@@ -250,20 +246,24 @@ def extract_text_from_pdf(pdf_path):
         # 尝试使用PyPDF2解析
         with open(pdf_path, 'rb') as f:
             reader = PdfReader(f)
-            return '\n'.join([page.extract_text() for page in reader.pages])
+            text = '\n'.join([page.extract_text() for page in reader.pages])
+            # 新增Unicode清理
+            return text.encode('utf-8', 'ignore').decode('utf-8')  # 过滤无效字符
     except Exception as pdf_error:
         print(f"PyPDF2解析失败，尝试备用解析引擎: {pdf_path}")
         try:
             # 备选方案1：使用pdfplumber（需要安装）
             import pdfplumber
             with pdfplumber.open(pdf_path) as pdf:
-                return '\n'.join([page.extract_text() for page in pdf.pages])
+                text = '\n'.join([page.extract_text() for page in pdf.pages])
+                return text.encode('utf-8', 'ignore').decode('utf-8')  # 过滤无效字符
         except Exception as plumber_error:
             try:
                 # 备选方案2：使用PyMuPDF（需要安装）
                 import fitz  # PyMuPDF的导入名称
                 doc = fitz.open(pdf_path)
-                return '\n'.join([page.get_text() for page in doc])
+                text = '\n'.join([page.get_text() for page in doc])
+                return text.encode('utf-8', 'ignore').decode('utf-8')  # 过滤无效字符
             except Exception as fitz_error:
                 error_msg = (
                     f"PDF解析全部失败: {pdf_path}\n"
@@ -326,8 +326,14 @@ async def process_single_paper(executor, lm, paper, row_index):
     pdf_path = os.path.join('papers', f"{paper['paper_id']}.pdf")
     paper_text = await loop.run_in_executor(executor, extract_text_from_pdf, pdf_path)
     
-    # 总结论文
-    summary = await loop.run_in_executor(executor, summarize_paper, lm, paper_text)
+    # 新增文本截断逻辑
+    truncated_text = paper_text
+    if len(paper_text) > MAX_PAPER_TEXT_LENGTH:
+        print(f"论文截断警告: {paper['paper_title']}（ID: {paper['paper_id']}）文本长度 {len(paper_text)} 字符，已截断")
+        truncated_text = paper_text[:MAX_PAPER_TEXT_LENGTH] + "[...截断...]"
+    
+    # 总结论文（使用截断后的文本）
+    summary = await loop.run_in_executor(executor, summarize_paper, lm, truncated_text)
     
     return row_index, summary
 
@@ -362,7 +368,7 @@ def generate_daily_summary(lm, df: pd.DataFrame, target_date: datetime.date = No
     # LLM生成简报
     prompt = (
         f"请将以下论文汇总信息整理成一份结构清晰的每日简报（使用中文）：\n{combined_text}\n"
-        "要求：\n1. 分领域总结研究趋势\n2. 用简洁的bullet points呈现\n3. 推荐3篇最值得阅读的论文并说明理由\n4. 领域相关趋势下列出相关论文标题\n5. 论文标题用英文表达\n"
+        "要求：\n1. 分领域总结研究趋势\n2. 用简洁的bullet points呈现\n3. 推荐3篇最值得阅读的论文并说明理由\n4. 领域相关趋势列出相关论文标题\n5. 论文标题用英文表达\n"
         "6.只输出分领域研究趋势总结和推荐阅读论文，不需要输出其他内容\n7.论文标题输出时不要省略"
     )
     return lm(prompt)[0]
@@ -398,31 +404,6 @@ def push_daily_summary(lm, df: pd.DataFrame, target_date: datetime.date = None):
             }
         }
         send_to_feishu_with_retry(message)
-
-def reset_recent_pushed_status(df: pd.DataFrame, days: int = 7) -> pd.DataFrame:
-    """重置最近N天论文的推送状态（用于重复推送）
-    
-    Args:
-        df: 论文数据集
-        days: 需要重置状态的天数范围（默认最近7天）
-    
-    Returns:
-        更新后的DataFrame
-    """
-    # 计算日期范围
-    cutoff_date = datetime.date.today() - datetime.timedelta(days=days)
-    
-    # 筛选需要重置的记录（使用loc避免链式赋值警告）
-    mask = df['update_time'] >= cutoff_date
-    reset_count = df.loc[mask, 'pushed'].sum()
-    
-    # 执行状态重置
-    df.loc[mask, 'pushed'] = False
-    
-    # 保存更新到文件
-    df.to_parquet(META_FILE_NAME, engine='pyarrow')
-    logging.info(f"已重置最近{days}天内{reset_count}篇论文的推送状态")
-    return df
 
 def process_papers_and_generate_summaries(lm, df: pd.DataFrame) -> pd.DataFrame:
     """处理论文下载并生成摘要（返回更新后的DataFrame）"""
@@ -470,23 +451,38 @@ def process_papers_and_generate_summaries(lm, df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+def generate_weekly_summary_if_sunday(lm, df):
+    """如果是周日则生成周报，否则生成日报"""
+    today = datetime.date.today()
+    
+    if today.weekday() == 6:  # 周日（0=周一，6=周日）
+        print("检测到周日，生成本周所有日报")
+        # 遍历过去一周（周一到周日）
+        for i in range(6, -1, -1):
+            past_day = today - datetime.timedelta(days=i)
+            push_daily_summary(lm, df, past_day)
+    else:
+        print("生成今日日报")
+        push_daily_summary(lm, df, today)
+
 # 主流程修改
-if __name__ == "__main__":
-    # 配置dspy
-    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
-    dspy.configure(lm=lm)
+def main(query: str, 
+        max_results: int,
+        meta_file: str,
+        lm: dspy.LM):
+    """主流程函数（参数化版本）"""
 
     # 获取今日论文
-    new_papers = get_daily_papers("\"RAG\" OR \"Retrieval-Augmented Generation\"", 10)
+    new_papers = get_daily_papers(query, max_results)
 
     # 过滤已存在论文
-    filtered_papers = filter_existing_papers(new_papers)
+    filtered_papers = filter_existing_papers(new_papers, meta_file)
 
-    save_to_parquet(filtered_papers)
+    save_to_parquet(filtered_papers, meta_file)
     print(f"保存了{len(filtered_papers)}篇新论文")
     
     # 读取保存的论文数据
-    df = pd.read_parquet(META_FILE_NAME)
+    df = pd.read_parquet(meta_file)
 
     # 处理论文并生成摘要
     df = process_papers_and_generate_summaries(lm, df)
@@ -494,16 +490,50 @@ if __name__ == "__main__":
     # TODO(ysj): filter paper by user specified summary
     
     # 保存更新后的DataFrame
-    df.to_parquet(META_FILE_NAME, engine='pyarrow')
+    df.to_parquet(meta_file, engine='pyarrow')
     
     # df = reset_recent_pushed_status(df, 7)
     
-    push_to_feishu(df)
+    push_to_feishu(df, meta_file)
     
-    # 替换原有的每日总结代码
-    today = datetime.date.today()
-    # 遍历过去一周的每一天
-    for i in range(6, -1, -1):
-        # 计算过去第 i 天的日期
-        past_day = today - datetime.timedelta(days=i)
-        push_daily_summary(lm, df, past_day)
+    # generate_weekly_summary_if_sunday(lm, df)
+
+
+def reset_recent_pushed_status(df: pd.DataFrame, days: int, meta_file: str) -> pd.DataFrame:
+    """重置推送状态（参数化版本）"""
+    # 计算日期范围
+    cutoff_date = datetime.date.today() - datetime.timedelta(days=days)
+    
+    # 筛选需要重置的记录（使用loc避免链式赋值警告）
+    mask = df['update_time'] >= cutoff_date
+    reset_count = df.loc[mask, 'pushed'].sum()
+    
+    # 执行状态重置
+    df.loc[mask, 'pushed'] = False
+    
+    # 保存更新到文件
+    df.to_parquet(meta_file, engine='pyarrow')
+    logging.info(f"已重置最近{days}天内{reset_count}篇论文的推送状态")
+    return df
+
+def rag_papers(lm):
+    main("\"RAG\" OR \"Retrieval-Augmented Generation\"", 20, "data/daily_papers.parquet", lm)
+
+def kg_papers(lm):
+    main("\"knowledge-graph\" OR \"knowledge graph\"", 20, "data/daily_papers_kg.parquet", lm)
+
+if __name__ == "__main__":
+    # 配置dspy
+    lm = dspy.LM("openai/" + CHAT_MODEL_NAME, api_base=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0.2)
+    dspy.configure(lm=lm)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", type=str, default="rag", help="任务名称")
+    args = parser.parse_args()
+
+    if args.task == "rag":
+        rag_papers(lm)
+    elif args.task == "kg":
+        kg_papers(lm)
+    else:
+        print("未知任务")

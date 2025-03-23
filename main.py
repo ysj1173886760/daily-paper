@@ -528,7 +528,7 @@ if __name__ == "__main__":
     dspy.configure(lm=lm)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, default="rag", help="任务名称")
+    parser.add_argument("--task", type=str, default="", help="任务名称")
     args = parser.parse_args()
 
     if args.task == "rag":

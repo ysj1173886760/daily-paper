@@ -517,10 +517,10 @@ def reset_recent_pushed_status(df: pd.DataFrame, days: int, meta_file: str) -> p
     return df
 
 def rag_papers(lm):
-    main("\"RAG\" OR \"Retrieval-Augmented Generation\"", 20, "data/daily_papers.parquet", lm)
+    main("\"RAG\" OR \"Retrieval-Augmented Generation\"", 40, "data/daily_papers.parquet", lm)
 
 def kg_papers(lm):
-    main("\"knowledge-graph\" OR \"knowledge graph\"", 20, "data/daily_papers_kg.parquet", lm)
+    main("\"knowledge-graph\" OR \"knowledge graph\"", 40, "data/daily_papers_kg.parquet", lm)
 
 if __name__ == "__main__":
     # 配置dspy

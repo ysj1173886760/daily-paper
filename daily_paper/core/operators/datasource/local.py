@@ -32,7 +32,7 @@ class LocalSource(Operator):
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 paper = Paper(
-                    paper_id=data["paper_id"],
+                    id=data["paper_id"],
                     title=data["title"],
                     url=data["url"],
                     abstract=data["abstract"],

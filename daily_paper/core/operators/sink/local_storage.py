@@ -30,11 +30,11 @@ class LocalStorage(Operator):
         """
         for paper in papers:
             # 使用论文ID作为文件名
-            file_path = self.storage_dir / f"{paper.paper_id}.json"
+            file_path = self.storage_dir / f"{paper.id}.json"
             
             # 将Paper对象转换为字典
             paper_dict = {
-                "paper_id": paper.paper_id,
+                "paper_id": paper.id,
                 "title": paper.title,
                 "url": paper.url,
                 "abstract": paper.abstract,

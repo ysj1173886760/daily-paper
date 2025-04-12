@@ -40,4 +40,4 @@ async def test_arxiv_source_with_list_topic():
     # 打印论文内容供人工检查
     for i, paper in enumerate(papers, 1):
         logger.info(f"\n论文 {i}:")
-        logger.info(f"Title: {paper.title}")
+        logger.info(f"{paper}")

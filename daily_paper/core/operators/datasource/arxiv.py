@@ -67,7 +67,7 @@ class ArxivSource(Operator):
             paper_url = ARXIV_URL + 'abs/' + paper_key
 
             arxiv_paper = Paper(
-              paper_id=paper_key,
+              id=paper_key,
               title=paper_title,
               url=paper_url,
               abstract=paper_abstract,

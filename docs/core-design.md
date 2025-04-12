@@ -57,12 +57,11 @@ class Operator:
 ## 3. 流水线设计
 
 ### 3.1 Pipeline 框架
-```python
-from typing import Dict, List, Set
-from dataclasses import dataclass
-from enum import Enum
-import asyncio
 
+Pipeline框架采用DAG（有向无环图）结构设计，支持算子的并行执行和依赖管理。
+
+核心类设计：
+```python
 class OperatorStatus(Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -73,178 +72,55 @@ class OperatorStatus(Enum):
 class OperatorNode:
     operator: Operator
     name: str
-    dependencies: Set[str]  # 依赖的算子名称
+    dependencies: Set[str]
     status: OperatorStatus = OperatorStatus.PENDING
-    result: Any = None
 
 class DAGPipeline:
     def __init__(self):
         self.operators: Dict[str, OperatorNode] = {}
-        self.execution_order: List[Set[str]] = []  # 每个集合中的算子可以并行执行
+        self.execution_order: List[Set[str]] = []  # 每层可并行执行的算子集合
     
     def add_operator(self, name: str, operator: Operator, dependencies: List[str] = None):
-        """添加算子到DAG中
-        
-        Args:
-            name: 算子唯一名称
-            operator: 算子实例
-            dependencies: 依赖的算子名称列表
-        """
-        if name in self.operators:
-            raise ValueError(f"Operator {name} already exists")
-            
-        self.operators[name] = OperatorNode(
-            operator=operator,
-            name=name,
-            dependencies=set(dependencies or [])
-        )
-    
-    def _validate_dag(self):
-        """验证DAG是否有效（无环）"""
-        visited = set()
-        temp = set()
-        
-        def has_cycle(node: str) -> bool:
-            if node in temp:
-                return True
-            if node in visited:
-                return False
-                
-            temp.add(node)
-            for dep in self.operators[node].dependencies:
-                if has_cycle(dep):
-                    return True
-            temp.remove(node)
-            visited.add(node)
-            return False
-            
-        for node in self.operators:
-            if has_cycle(node):
-                raise ValueError("Cycle detected in pipeline")
-    
-    def _compute_execution_order(self):
-        """计算算子的执行顺序，将可并行的算子分组"""
-        self._validate_dag()
-        
-        # 计算入度
-        in_degree = {name: len(node.dependencies) 
-                    for name, node in self.operators.items()}
-        
-        # 使用拓扑排序按层次组织算子
-        self.execution_order = []
-        while in_degree:
-            # 找出当前所有入度为0的节点（可以并行执行）
-            current_layer = {name for name, deg in in_degree.items() if deg == 0}
-            if not current_layer:
-                raise ValueError("Invalid DAG structure")
-                
-            self.execution_order.append(current_layer)
-            
-            # 更新依赖这些节点的入度
-            for name in current_layer:
-                del in_degree[name]
-                for other_name, node in self.operators.items():
-                    if name in node.dependencies and other_name in in_degree:
-                        in_degree[other_name] -= 1
+        """添加算子到DAG中"""
+        pass
     
     async def execute(self, initial_data: Any = None) -> Dict[str, Any]:
-        """执行整个流水线
-        
-        Returns:
-            Dict[str, Any]: 每个算子的输出结果
-        """
-        self._compute_execution_order()
-        results = {}
-        
-        # 按层执行算子
-        for layer in self.execution_order:
-            # 准备当前层的所有任务
-            tasks = []
-            for op_name in layer:
-                node = self.operators[op_name]
-                
-                # 获取依赖的输入
-                if not node.dependencies:
-                    op_input = initial_data
-                else:
-                    # 如果有多个依赖，这里可以定义如何合并多个依赖的输出
-                    op_input = [results[dep] for dep in node.dependencies]
-                
-                # 创建异步任务
-                tasks.append(self._execute_operator(node, op_input))
-            
-            # 并行执行当前层的所有任务
-            layer_results = await asyncio.gather(*tasks)
-            
-            # 保存结果
-            for op_name, result in zip(layer, layer_results):
-                results[op_name] = result
-                self.operators[op_name].result = result
-        
-        return results
-    
-    async def _execute_operator(self, node: OperatorNode, op_input: Any) -> Any:
-        """执行单个算子"""
-        try:
-            node.status = OperatorStatus.RUNNING
-            # 如果算子支持异步，使用异步执行
-            if hasattr(node.operator, 'process_async'):
-                result = await node.operator.process_async(op_input)
-            else:
-                # 否则在线程池中执行
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, node.operator.process, op_input
-                )
-            node.status = OperatorStatus.COMPLETED
-            return result
-        except Exception as e:
-            node.status = OperatorStatus.FAILED
-            raise
+        """按照拓扑顺序执行算子，同一层级并行执行"""
+        pass
 ```
+
+主要特性：
+1. **DAG结构**：支持复杂的算子依赖关系
+2. **并行执行**：同一层级的算子可并行处理
+3. **状态管理**：跟踪每个算子的执行状态
+4. **异步支持**：支持同步/异步算子混合使用
 
 ### 3.2 示例流水线
 
 ```python
-# 创建DAG流水线
+# 创建DAG流水线示例
 pipeline = DAGPipeline()
 
-# 添加数据源算子
-pipeline.add_operator(
-    name="arxiv_source",
-    operator=ArxivSource(topic="RAG")
-)
+# 数据源算子
+pipeline.add_operator("arxiv_source", ArxivSource(topic="RAG"))
 
-# 添加并行的处理算子
-pipeline.add_operator(
-    name="summarizer",
-    operator=LLMSummarizer(),
-    dependencies=["arxiv_source"]
-)
+# 并行处理算子
+pipeline.add_operator("summarizer", LLMSummarizer(), ["arxiv_source"])
+pipeline.add_operator("topic_filter", TopicFilter(domain="RAG"), ["arxiv_source"])
 
-pipeline.add_operator(
-    name="topic_filter",
-    operator=TopicFilter(domain="RAG"),
-    dependencies=["arxiv_source"]
-)
+# 汇聚处理
+pipeline.add_operator("pending_marker", InsertPendingIDs("push_pending"), 
+                     ["summarizer", "topic_filter"])
 
-# 添加依赖多个上游算子的处理算子
-pipeline.add_operator(
-    name="pending_marker",
-    operator=InsertPendingIDs("push_pending"),
-    dependencies=["summarizer", "topic_filter"]
-)
+# 存储算子
+pipeline.add_operator("storage", LocalStorage(), ["pending_marker"])
+```
 
-# 添加存储算子
-pipeline.add_operator(
-    name="storage",
-    operator=LocalStorage(),
-    dependencies=["pending_marker"]
-)
-
-# 执行流水线
-async def run_pipeline():
-    results = await pipeline.execute()
-    return results
+执行流程示意：
+```
+arxiv_source
+    ├── summarizer ──┐
+    └── topic_filter ┴── pending_marker --> storage
 ```
 
 ### 3.3 状态管理设计

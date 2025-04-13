@@ -509,7 +509,7 @@ def reset_recent_pushed_status(df: pd.DataFrame, days: int, meta_file: str) -> p
     reset_count = df.loc[mask, 'pushed'].sum()
     
     # 执行状态重置
-    df.loc[mask, 'pushed'] = False
+    df.loc[mask, 'pushed'] = FalsWithSummarye
     
     # 保存更新到文件
     df.to_parquet(meta_file, engine='pyarrow')

@@ -75,7 +75,6 @@ class ArxivSource(Operator):
               category=primary_category,
               publish_date=publish_time,
               update_date=update_time,
-              comments=comments
             )
             paper_list.append(arxiv_paper)
 

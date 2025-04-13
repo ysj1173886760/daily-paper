@@ -13,4 +13,7 @@ class Paper:
     category: str        # 论文类别
     publish_date: date   # 发布日期
     update_date: date    # 更新日期
-    comments: Optional[str] = None  # 评论
+
+@dataclass
+class PaperWithSummary(Paper):
+    summary: str

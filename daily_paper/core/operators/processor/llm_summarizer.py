@@ -1,10 +1,12 @@
 import asyncio
+from dataclasses import asdict
 from typing import Any, List
 import openai
 from daily_paper.core.operators.base import Operator
 from daily_paper.core.models import Paper, PaperWithSummary
 from daily_paper.core.common import logger
 from daily_paper.core.config import LLMConfig
+from tqdm.asyncio import tqdm_asyncio
 
 class LLMSummarizer(Operator):
     """使用LLM生成论文摘要的算子"""
@@ -42,10 +44,16 @@ class LLMSummarizer(Operator):
         """
         # 使用asyncio.gather并行处理所有论文
         tasks = [self.summarize_paper(paper_text) for paper, paper_text in papers]
-        summaries = await asyncio.gather(*tasks)
+        summaries = await tqdm_asyncio.gather(
+            *tasks,
+            desc="总结论文",
+            total=len(tasks)
+        )
         
         # 将结果组装成PaperWithSummary对象
-        results = [PaperWithSummary(paper=paper, summary=summary) 
-                  for (paper, _), summary in zip(papers, summaries)]
+        results = [PaperWithSummary(
+            **asdict(paper),
+            summary=summary
+        ) for (paper, _), summary in zip(papers, summaries)]
 
         return results 

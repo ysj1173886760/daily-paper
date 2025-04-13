@@ -44,6 +44,13 @@ class StateManager:
         """获取待处理的ID集合"""
         states = self._load_states()
         return {id for id, state in states.items() if state == IDState.PENDING}
+    
+    def is_finished(self, id: str) -> bool:
+        """判断ID是否已处理完成"""
+        states = self._load_states()
+        if id not in states:
+            return False
+        return states[id] == IDState.FINISHED
             
     def store_pending_ids(self, ids: List[str]):
         """存储待处理的ID，已完成的ID不会被重新标记为pending"""
@@ -114,25 +121,54 @@ class GetAllPendingIDs(Operator):
 
 
 class MarkIDsAsFinished(Operator):
-    """将ID标记为处理完成的算子"""
+    """将对象标记为处理完成的算子"""
     
-    def __init__(self, base_dir: str, namespace: str):
+    def __init__(self, base_dir: str, namespace: str, id_getter: callable = lambda x: x):
         """初始化MarkIDsAsFinished
         
         Args:
             base_dir: 状态存储根目录
             namespace: 命名空间，用于区分不同类型的ID
+            id_getter: 从对象中获取ID的函数，默认直接返回对象本身
         """
         self.state_manager = StateManager(base_dir, namespace)
+        self.id_getter = id_getter
         
-    async def process(self, ids: List[str]) -> List[str]:
-        """将ID标记为已完成
+    async def process(self, items: List[Any]) -> List[Any]:
+        """将对象标记为已完成
         
         Args:
-            ids: ID列表
+            items: 对象列表
             
         Returns:
-            List[str]: 输入的ID列表
+            List[Any]: 输入的对象列表
         """
+        ids = [self.id_getter(item) for item in items]
         self.state_manager.mark_as_finished(ids)
-        return ids
+        return items
+
+
+class FilterFinishedIDs(Operator):
+    """过滤对象列表，只保留ID为未处理完成状态的对象的算子"""
+    
+    def __init__(self, base_dir: str, namespace: str, id_getter: callable = lambda x: x):
+        """初始化FilterFinishedIDs
+        
+        Args:
+            base_dir: 状态存储根目录
+            namespace: 命名空间，用于区分不同类型的ID
+            id_getter: 从对象中获取ID的函数，默认直接返回对象本身
+        """
+        self.state_manager = StateManager(base_dir, namespace)
+        self.id_getter = id_getter
+        
+    async def process(self, items: List[Any]) -> List[Any]:
+        """过滤对象列表，只返回ID为未处理完成状态的对象
+        
+        Args:
+            items: 需要过滤的对象列表
+            
+        Returns:
+            List[Any]: ID为未处理完成状态的对象列表
+        """
+        return [item for item in items if not self.state_manager.is_finished(self.id_getter(item))]

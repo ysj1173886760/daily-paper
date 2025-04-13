@@ -69,49 +69,68 @@ class DAGPipeline:
         Returns:
             Dict[str, Any]: 每个算子的执行结果
         """
-        # 重置所有算子状态
-        for op in self.operators.values():
-            op.status = OperatorStatus.PENDING
-            op.result = None
+        try:
+            # 初始化所有算子
+            setup_tasks = []
+            for op in self.operators.values():
+                setup_tasks.append(op.operator.setup())
+            await asyncio.gather(*setup_tasks)
             
-        results = {}
-        if initial_data is not None:
-            results["initial"] = initial_data
-            
-        # 按层级执行算子
-        for layer in self.execution_order:
-            # 同一层级的算子可以并行执行
-            tasks = []
-            for op_name in layer:
-                op_node = self.operators[op_name]
-                # 收集所有依赖的结果
-                input_data = initial_data
-                if op_node.dependencies:
-                    # 如果有依赖，使用依赖的结果作为输入
-                    deps_results = [results[dep] for dep in op_node.dependencies]
-                    if len(deps_results) == 1:
-                        input_data = deps_results[0]
-                    else:
-                        input_data = deps_results
+            # 重置所有算子状态
+            for op in self.operators.values():
+                op.status = OperatorStatus.PENDING
+                op.result = None
                 
-                op_node.status = OperatorStatus.RUNNING
-                tasks.append(self._execute_operator(op_node, input_data))
+            results = {}
+            if initial_data is not None:
+                results["initial"] = initial_data
                 
-            # 等待当前层级的所有算子执行完成
-            layer_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # 处理执行结果
-            for op_name, result in zip(layer, layer_results):
-                op_node = self.operators[op_name]
-                if isinstance(result, Exception):
-                    op_node.status = OperatorStatus.FAILED
-                    raise result
-                else:
-                    op_node.status = OperatorStatus.COMPLETED
-                    op_node.result = result
-                    results[op_name] = result
+            # 按层级执行算子
+            for layer in self.execution_order:
+                # 同一层级的算子可以并行执行
+                tasks = []
+                for op_name in layer:
+                    op_node = self.operators[op_name]
+                    # 收集所有依赖的结果
+                    input_data = initial_data
+                    if op_node.dependencies:
+                        # 如果有依赖，使用依赖的结果作为输入
+                        deps_results = [results[dep] for dep in op_node.dependencies]
+                        if len(deps_results) == 1:
+                            input_data = deps_results[0]
+                        else:
+                            input_data = deps_results
                     
-        return results
+                    op_node.status = OperatorStatus.RUNNING
+                    tasks.append(self._execute_operator(op_node, input_data))
+                    
+                # 等待当前层级的所有算子执行完成
+                layer_results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # 处理执行结果
+                for op_name, result in zip(layer, layer_results):
+                    op_node = self.operators[op_name]
+                    if isinstance(result, Exception):
+                        op_node.status = OperatorStatus.FAILED
+                        raise result
+                    else:
+                        op_node.status = OperatorStatus.COMPLETED
+                        op_node.result = result
+                        results[op_name] = result
+                        
+            return results
+        except Exception as e:
+            raise e
+        finally:
+            # 确保在执行完成或发生异常时都能清理资源
+            await self.cleanup()
+            
+    async def cleanup(self):
+        """清理所有算子的资源"""
+        cleanup_tasks = []
+        for op in self.operators.values():
+            cleanup_tasks.append(op.operator.cleanup())
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
     
     async def _execute_operator(self, op_node: OperatorNode, input_data: Any) -> Any:
         """执行单个算子

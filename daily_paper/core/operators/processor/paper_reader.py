@@ -177,7 +177,7 @@ class PaperReader(Operator):
         # 使用tqdm显示进度
         results = await tqdm_asyncio.gather(
             *tasks,
-            desc="处理论文",
+            desc="提取论文内容",
             total=len(tasks)
         )
         

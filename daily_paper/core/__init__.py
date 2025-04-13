@@ -13,7 +13,7 @@ from daily_paper.core.operators.state import (
 )
 from daily_paper.core.operators.sink import (
     FeishuPusher,
-    LocalStorage,
+    LocalStorageWriter,
 )
 
 __all__ = [
@@ -38,5 +38,5 @@ __all__ = [
     
     # 输出算子
     'FeishuPusher',
-    'LocalStorage',
+    'LocalStorageWriter',
 ]

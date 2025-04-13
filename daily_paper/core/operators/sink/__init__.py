@@ -1,7 +1,7 @@
 from daily_paper.core.operators.sink.feishu import FeishuPusher
-from daily_paper.core.operators.sink.local_storage import LocalStorage
+from daily_paper.core.operators.storage.local_storage import LocalStorageWriter
 
 __all__ = [
     'FeishuPusher',
-    'LocalStorage',
+    'LocalStorageWriter',
 ]

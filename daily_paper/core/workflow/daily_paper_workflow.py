@@ -7,10 +7,13 @@ from daily_paper.core.models import Paper, PaperWithSummary
 from daily_paper.core.config import LLMConfig
 from daily_paper.core.config import Config
 from daily_paper.core.common import logger
-from daily_paper.core.operators.sink.local_storage import LocalStorage
+from daily_paper.core.operators.storage.local_storage import LocalStorageWriter, LocalStorageReader
 import os
 import asyncio
 import argparse
+
+def id_getter(x: Paper):
+    return x.id
 
 async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
     """创建论文处理pipeline
@@ -31,9 +34,6 @@ async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
         operator=ArxivSource(topic=["RAG", "Retrieval Augmented Generation"], max_results=3),
         dependencies=None
     )
-
-    def id_getter(x: Paper):
-        return x.id
 
     pipeline.add_operator(
         name="filter_pending_ids",
@@ -60,7 +60,7 @@ async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
 
     pipeline.add_operator(
         name="save_paper_summaries",
-        operator=LocalStorage(storage_dir=os.path.join(config.storage.base_path, "paper_summaries"), storage_namespace="paper_summaries", key_value_getter=kv_getter),
+        operator=LocalStorageWriter(storage_dir=os.path.join(config.storage.base_path, "paper_summaries"), storage_namespace="paper_summaries", key_value_getter=kv_getter),
         dependencies=["paper_summarizer"]
     )
 
@@ -69,6 +69,47 @@ async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
         name="mark_processed_papers",
         operator=MarkIDsAsFinished(base_dir=os.path.join(config.storage.base_path, "state"), namespace="arxiv", id_getter=id_getter),
         dependencies=["save_paper_summaries"]
+    )
+
+    return pipeline
+
+async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
+    """创建论文推送pipeline
+    
+    包含以下步骤：
+    1. 从本地存储读取论文摘要
+    2. 使用FeishuPush算子推送论文摘要到飞书
+    3. 将推送成功的论文摘要标记为已推送
+    """
+    pipeline = DAGPipeline()
+
+    def convert_to_paper_with_summary(key: str, value: dict):
+      return PaperWithSummary(**value)
+
+    pipeline.add_operator(
+        name="read_paper_summaries",
+        operator=LocalStorageReader(storage_dir=os.path.join(config.storage.base_path, "paper_summaries"), storage_namespace="paper_summaries", value_reader=convert_to_paper_with_summary),
+        dependencies=None
+    )
+
+    # filter the papers that have been pushed
+    pipeline.add_operator(
+        name="filter_pushed_papers",
+        operator=FilterFinishedIDs(base_dir=os.path.join(config.storage.base_path, "state"), namespace="push", id_getter=id_getter),
+        dependencies=["read_paper_summaries"]
+    )
+
+    # TODO(ysj): impl me
+    # pipeline.add_operator(
+    #     name="push_paper_summaries",
+    #     operator=FeishuPush(config.feishu), 
+    #     dependencies=["filter_pushed_papers"]
+    # )
+
+    pipeline.add_operator(
+        name="mark_pushed_papers",
+        operator=MarkIDsAsFinished(base_dir=os.path.join(config.storage.base_path, "state"), namespace="push", id_getter=id_getter),
+        dependencies=["push_paper_summaries"]
     )
 
     return pipeline

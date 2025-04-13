@@ -2,16 +2,17 @@ from daily_paper.core.pipeline import DAGPipeline
 from daily_paper.core.operators.datasource.arxiv import ArxivSource
 from daily_paper.core.operators.processor.paper_reader import PaperReader
 from daily_paper.core.operators.processor.llm_summarizer import LLMSummarizer
-from daily_paper.core.operators.state.pending import FilterFinishedIDs, MarkIDsAsFinished
-from daily_paper.core.models import Paper
+from daily_paper.core.operators.state.pending import FilterFinishedIDs, MarkIDsAsFinished, InsertPendingIDs
+from daily_paper.core.models import Paper, PaperWithSummary
 from daily_paper.core.config import LLMConfig
 from daily_paper.core.config import Config
 from daily_paper.core.common import logger
+from daily_paper.core.operators.sink.local_storage import LocalStorage
 import os
 import asyncio
 import argparse
 
-async def create_paper_pipeline(config: Config) -> DAGPipeline:
+async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
     """创建论文处理pipeline
     
     包含以下步骤：
@@ -43,7 +44,7 @@ async def create_paper_pipeline(config: Config) -> DAGPipeline:
     # only read the unprocessed papers
     pipeline.add_operator(
         name="paper_reader",
-        operator=PaperReader(os.path.join(config.storage.base_path, "papers")),
+        operator=PaperReader(os.path.join(config.storage.base_path, "paper_caches")),
         dependencies=["filter_pending_ids"]
     )
     
@@ -54,26 +55,28 @@ async def create_paper_pipeline(config: Config) -> DAGPipeline:
         dependencies=["paper_reader"]
     )
 
-    # TODO(ysj): save processed papers
-    # pipeline.add_operator(
-    #     name="save_processed_papers",
-    #     operator=SaveProcessedPapers(),
-    #     dependencies=["paper_summarizer"]
-    # )
+    def kv_getter(x: PaperWithSummary):
+      return x.id, x.summary
+
+    pipeline.add_operator(
+        name="save_paper_summaries",
+        operator=LocalStorage(storage_dir=os.path.join(config.storage.base_path, "paper_summaries"), storage_namespace="paper_summaries", key_value_getter=kv_getter),
+        dependencies=["paper_summarizer"]
+    )
 
     # mark the processed papers as finished
     pipeline.add_operator(
         name="mark_processed_papers",
         operator=MarkIDsAsFinished(base_dir=os.path.join(config.storage.base_path, "state"), namespace="arxiv", id_getter=id_getter),
-        dependencies=["paper_summarizer"]
+        dependencies=["save_paper_summaries"]
     )
-    
+
     return pipeline
 
 async def run_paper_pipeline(config_path: str):
     """运行论文处理pipeline"""
     config = Config.from_yaml(config_path)
-    pipeline: DAGPipeline = await create_paper_pipeline(config)
+    pipeline: DAGPipeline = await create_paper_summarize_pipeline(config)
     results = await pipeline.execute()
 
     logger.info(f"Pipeline completed with {len(results)} results")

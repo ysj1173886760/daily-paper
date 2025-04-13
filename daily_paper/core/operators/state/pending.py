@@ -1,8 +1,15 @@
-from typing import Any, List, Set
+from typing import Any, List, Set, Dict, Literal
 import json
 from pathlib import Path
+from enum import Enum
 
 from daily_paper.core.operators.base import Operator
+
+
+class IDState(str, Enum):
+    """ID的状态枚举"""
+    PENDING = "pending"
+    FINISHED = "finished"
 
 
 class StateManager:
@@ -17,31 +24,47 @@ class StateManager:
         """
         self.storage_dir = Path(base_dir) / "pending_states"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file = self.storage_dir / f"{namespace}.json"
+        self.state_file = self.storage_dir / f"{namespace}_states.json"
         
-    def get_pending_ids(self) -> Set[str]:
-        """获取待处理的ID集合"""
+    def _load_states(self) -> Dict[str, IDState]:
+        """加载所有ID的状态"""
         if not self.state_file.exists():
-            return set()
+            return {}
             
         with open(self.state_file, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            states = json.load(f)
+            return {k: IDState(v) for k, v in states.items()}
+            
+    def _save_states(self, states: Dict[str, IDState]):
+        """保存所有ID的状态"""
+        with open(self.state_file, "w", encoding="utf-8") as f:
+            json.dump({k: v.value for k, v in states.items()}, f)
+            
+    def get_pending_ids(self) -> Set[str]:
+        """获取待处理的ID集合"""
+        states = self._load_states()
+        return {id for id, state in states.items() if state == IDState.PENDING}
             
     def store_pending_ids(self, ids: List[str]):
-        """存储待处理的ID"""
-        pending_ids = self.get_pending_ids()
-        pending_ids.update(ids)
+        """存储待处理的ID，已完成的ID不会被重新标记为pending"""
+        states = self._load_states()
         
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(list(pending_ids), f)
+        # 只更新那些不是FINISHED状态的ID
+        for id in ids:
+            if states.get(id) != IDState.FINISHED:
+                states[id] = IDState.PENDING
+                
+        self._save_states(states)
             
     def mark_as_finished(self, ids: List[str]):
         """将ID标记为已完成"""
-        pending_ids = self.get_pending_ids()
-        pending_ids.difference_update(ids)
+        states = self._load_states()
         
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(list(pending_ids), f)
+        # 将指定的ID标记为完成状态
+        for id in ids:
+            states[id] = IDState.FINISHED
+            
+        self._save_states(states)
 
 
 class InsertPendingIDs(Operator):

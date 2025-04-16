@@ -127,7 +127,7 @@ def send_to_feishu(paper: ArxivPaper, summary: str) -> bool:
     """发送单篇论文到飞书（返回是否成功）"""
     if not FEISHU_WEBHOOK_URL:
         logging.error("飞书Webhook地址未配置")
-        return
+        return False
 
     formatted_summary = summary.replace("\\n", "\n")
     
@@ -193,6 +193,8 @@ def push_to_feishu(df: pd.DataFrame, meta_file: str) -> pd.DataFrame:
         )
         if send_to_feishu(paper, row['summary']):
             success_indices.append(index)
+        else:
+            logging.error(f"飞书推送失败: {paper['paper_id']} {paper['paper_title']}")
     
     # 批量更新推送状态
     if success_indices:

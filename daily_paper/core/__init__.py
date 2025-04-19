@@ -9,7 +9,7 @@ from daily_paper.core.operators.processor import (
 from daily_paper.core.operators.state import (
     InsertPendingIDs,
     GetAllPendingIDs,
-    MarkIDsAsFinished
+    MarkIDsAsFinished,
 )
 from daily_paper.core.operators.sink import (
     FeishuPusher,
@@ -18,24 +18,20 @@ from daily_paper.core.operators.sink import (
 
 __all__ = [
     # 核心组件
-    'Operator',
-    'OperatorStatus',
-    'OperatorNode',
-    'DAGPipeline',
-    'Paper',
-    
+    "Operator",
+    "OperatorStatus",
+    "OperatorNode",
+    "DAGPipeline",
+    "Paper",
     # 数据源算子
-    'ArxivSource',
-    
+    "ArxivSource",
     # 处理算子
-    'LLMSummarizer',
-    
+    "LLMSummarizer",
     # 状态管理算子
-    'InsertPendingIDs',
-    'GetAllPendingIDs',
-    'MarkIDsAsFinished',
-    
+    "InsertPendingIDs",
+    "GetAllPendingIDs",
+    "MarkIDsAsFinished",
     # 输出算子
-    'FeishuPusher',
-    'LocalStorageWriter',
+    "FeishuPusher",
+    "LocalStorageWriter",
 ]

@@ -17,4 +17,4 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PAPERS_DIR, exist_ok=True)
 
 # 数据库配置（如果需要的话）
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./daily_paper.db") 
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./daily_paper.db")

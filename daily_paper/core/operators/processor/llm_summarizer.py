@@ -8,17 +8,20 @@ from daily_paper.core.common import logger
 from daily_paper.core.config import LLMConfig
 from tqdm.asyncio import tqdm_asyncio
 
+
 class LLMSummarizer(Operator):
     """使用LLM生成论文摘要的算子"""
-    
+
     def __init__(self, llm_config: LLMConfig):
         """初始化LLMSummarizer
-        
+
         Args:
             api_key: OpenAI API密钥
             model: 使用的模型名称
         """
-        self.client = openai.AsyncOpenAI(api_key=llm_config.api_key, base_url=llm_config.base_url)
+        self.client = openai.AsyncOpenAI(
+            api_key=llm_config.api_key, base_url=llm_config.base_url
+        )
         self.model = llm_config.model_name
 
     async def summarize_paper(self, paper_text) -> str:
@@ -28,32 +31,30 @@ class LLMSummarizer(Operator):
             model=self.model,
             messages=[
                 {"role": "system", "content": "你是一个专业的学术论文分析助手。"},
-                {"role": "user", "content": prompt}
-            ]
+                {"role": "user", "content": prompt},
+            ],
         )
         return summary.choices[0].message.content
-        
-    async def process(self, papers: list[tuple[Paper, str]]) -> list[tuple[PaperWithSummary]]:
+
+    async def process(
+        self, papers: list[tuple[Paper, str]]
+    ) -> list[tuple[PaperWithSummary]]:
         """为论文生成总结
-        
+
         Args:
             papers: 论文列表
-            
+
         Returns:
             List[PaperWithSummary]: 添加了摘要的论文列表
         """
         # 使用asyncio.gather并行处理所有论文
         tasks = [self.summarize_paper(paper_text) for paper, paper_text in papers]
-        summaries = await tqdm_asyncio.gather(
-            *tasks,
-            desc="总结论文",
-            total=len(tasks)
-        )
-        
-        # 将结果组装成PaperWithSummary对象
-        results = [PaperWithSummary(
-            **asdict(paper),
-            summary=summary
-        ) for (paper, _), summary in zip(papers, summaries)]
+        summaries = await tqdm_asyncio.gather(*tasks, desc="总结论文", total=len(tasks))
 
-        return results 
+        # 将结果组装成PaperWithSummary对象
+        results = [
+            PaperWithSummary(**asdict(paper), summary=summary)
+            for (paper, _), summary in zip(papers, summaries)
+        ]
+
+        return results

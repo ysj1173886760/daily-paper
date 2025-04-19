@@ -7,14 +7,16 @@ from daily_paper.core.operators.base import Operator, OperatorNode, OperatorStat
 
 class DAGPipeline:
     """DAG流水线实现"""
-    
+
     def __init__(self):
         self.operators: Dict[str, OperatorNode] = {}
         self.execution_order: List[Set[str]] = []
-        
-    def add_operator(self, name: str, operator: Operator, dependencies: Optional[List[str]] = None):
+
+    def add_operator(
+        self, name: str, operator: Operator, dependencies: Optional[List[str]] = None
+    ):
         """添加算子到DAG中
-        
+
         Args:
             name: 算子名称
             operator: 算子实例
@@ -22,7 +24,7 @@ class DAGPipeline:
         """
         if name in self.operators:
             raise ValueError(f"Operator with name {name} already exists")
-            
+
         if dependencies is None:
             dependencies = set()
         else:
@@ -31,41 +33,41 @@ class DAGPipeline:
                 if dep not in self.operators:
                     raise ValueError(f"Dependency {dep} does not exist")
             dependencies = set(dependencies)
-            
+
         self.operators[name] = OperatorNode(
-            operator=operator,
-            name=name,
-            dependencies=dependencies
+            operator=operator, name=name, dependencies=dependencies
         )
-        
+
         # 重新计算执行顺序
         self._compute_execution_order()
-        
+
     def _compute_execution_order(self):
         """计算算子的执行顺序，生成可并行执行的层级"""
         self.execution_order = []
         remaining = set(self.operators.keys())
-        
+
         while remaining:
             # 找出当前可执行的算子（所有依赖都已完成）
             executable = set()
             for name in remaining:
-                if all(dep not in remaining for dep in self.operators[name].dependencies):
+                if all(
+                    dep not in remaining for dep in self.operators[name].dependencies
+                ):
                     executable.add(name)
-                    
+
             if not executable:
                 # 如果没有可执行的算子但还有剩余算子，说明存在循环依赖
                 raise ValueError("Circular dependency detected in pipeline")
-                
+
             self.execution_order.append(executable)
             remaining -= executable
-            
+
     async def execute(self, initial_data: Any = None) -> Dict[str, Any]:
         """执行流水线
-        
+
         Args:
             initial_data: 初始输入数据
-            
+
         Returns:
             Dict[str, Any]: 每个算子的执行结果
         """
@@ -75,16 +77,16 @@ class DAGPipeline:
             for op in self.operators.values():
                 setup_tasks.append(op.operator.setup())
             await asyncio.gather(*setup_tasks)
-            
+
             # 重置所有算子状态
             for op in self.operators.values():
                 op.status = OperatorStatus.PENDING
                 op.result = None
-                
+
             results = {}
             if initial_data is not None:
                 results["initial"] = initial_data
-                
+
             # 按层级执行算子
             for layer in self.execution_order:
                 # 同一层级的算子可以并行执行
@@ -100,13 +102,13 @@ class DAGPipeline:
                             input_data = deps_results[0]
                         else:
                             input_data = deps_results
-                    
+
                     op_node.status = OperatorStatus.RUNNING
                     tasks.append(self._execute_operator(op_node, input_data))
-                    
+
                 # 等待当前层级的所有算子执行完成
                 layer_results = await asyncio.gather(*tasks, return_exceptions=True)
-                
+
                 # 处理执行结果
                 for op_name, result in zip(layer, layer_results):
                     op_node = self.operators[op_name]
@@ -117,28 +119,28 @@ class DAGPipeline:
                         op_node.status = OperatorStatus.COMPLETED
                         op_node.result = result
                         results[op_name] = result
-                        
+
             return results
         except Exception as e:
             raise e
         finally:
             # 确保在执行完成或发生异常时都能清理资源
             await self.cleanup()
-            
+
     async def cleanup(self):
         """清理所有算子的资源"""
         cleanup_tasks = []
         for op in self.operators.values():
             cleanup_tasks.append(op.operator.cleanup())
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-    
+
     async def _execute_operator(self, op_node: OperatorNode, input_data: Any) -> Any:
         """执行单个算子
-        
+
         Args:
             op_node: 算子节点
             input_data: 输入数据
-            
+
         Returns:
             Any: 算子执行结果
         """
@@ -146,4 +148,4 @@ class DAGPipeline:
             return await op_node.operator.process(input_data)
         except Exception as e:
             op_node.status = OperatorStatus.FAILED
-            raise e 
+            raise e

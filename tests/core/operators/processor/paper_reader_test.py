@@ -9,6 +9,7 @@ from daily_paper.core.common import logger
 from datetime import date
 from contextlib import asynccontextmanager
 
+
 @pytest.fixture(scope="function")
 def temp_dir():
     """创建临时目录的fixture"""
@@ -17,11 +18,13 @@ def temp_dir():
     # 测试结束后清理临时目录
     shutil.rmtree(temp_path, ignore_errors=True)
 
+
 @pytest.fixture(scope="function")
 def paper_reader(temp_dir):
     """创建PaperReader实例的fixture"""
     reader = PaperReader(cache_dir=temp_dir, max_workers=5)
     return reader
+
 
 @asynccontextmanager
 async def reader_lifecycle(reader: PaperReader):
@@ -31,6 +34,7 @@ async def reader_lifecycle(reader: PaperReader):
         yield reader
     finally:
         await reader.cleanup()
+
 
 @pytest.mark.slow
 @pytest.mark.asyncio
@@ -47,13 +51,13 @@ async def test_paper_download_and_process(paper_reader):
                 abstract="none",
                 category="cs.CL",
                 publish_date=date(2025, 4, 10).strftime("%Y-%m-%d"),
-                update_date=date(2025, 4, 10).strftime("%Y-%m-%d")
+                update_date=date(2025, 4, 10).strftime("%Y-%m-%d"),
             )
         ]
-        
+
         # 处理论文
         results = await reader.process(test_papers)
-        
+
         # 验证结果
         assert len(results) == len(test_papers)
         for paper, text in results:

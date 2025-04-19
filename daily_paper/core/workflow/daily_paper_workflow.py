@@ -104,13 +104,14 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
     )
 
     def title_and_content_getter(x: PaperWithSummary) -> Tuple[str, str]:
+      title = "📄 新论文推荐"
       content = f"**{x.title}**\n"
       content += f"**更新时间**: {x.update_date}\n\n"
       content += f"👤 {x.authors}\n\n"
       content += f"💡 AI总结：{x.summary}...\n\n"
       content += f"---\n"
       content += f"📎 [论文原文]({x.url})"
-      return x.title, content
+      return title, content
 
     pipeline.add_operator(
         name="push_paper_summaries",
@@ -118,8 +119,8 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
         dependencies=["filter_pushed_papers"]
     )
 
-    def filter_out_failed_papers(x: List[Tuple[Any, bool]]) -> List[Any]:
-      return [y for y in x if y[1] is True]
+    def filter_out_failed_papers(x: List[Tuple[PaperWithSummary, bool]]) -> List[PaperWithSummary]:
+      return [y[0] for y in x if y[1] is True]
 
     pipeline.add_operator(
         name="filter_out_push_failed_papers",
@@ -135,7 +136,7 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
 
     return pipeline
 
-async def run_paper_pipeline(config_path: str):
+async def run_paper_summarize_pipeline(config_path: str):
     """运行论文处理pipeline"""
     config = Config.from_yaml(config_path)
     pipeline: DAGPipeline = await create_paper_summarize_pipeline(config)
@@ -144,9 +145,17 @@ async def run_paper_pipeline(config_path: str):
     logger.info(f"Pipeline completed with {len(results)} results")
     return results
 
+async def run_paper_push_pipeline(config_path: str):
+    config = Config.from_yaml(config_path)
+    pipeline: DAGPipeline = await create_paper_push_pipeline(config)
+    results = await pipeline.execute()
+    logger.info(f"Pipeline completed with {len(results)} results")
+    return results
+
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--config", type=str, default="config.yaml")
     args = args.parse_args()
 
-    asyncio.run(run_paper_pipeline(args.config))
+    asyncio.run(run_paper_summarize_pipeline(args.config))
+    asyncio.run(run_paper_push_pipeline(args.config))

@@ -5,7 +5,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from daily_paper.core.operators.base import Operator
 from daily_paper.core.models import Paper
 import requests
-import logging
+from daily_paper.core.common import logger
 from typing import Callable, Tuple
 
 @retry(stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=10))
@@ -40,8 +40,7 @@ class FeishuPusher(Operator):
                 "elements": [{
                     "tag": "div",
                     "text": {
-                        "content": f"**{title}**\n"
-                                  f"{content}",
+                        "content": f"{content}",
                         "tag": "lark_md"
                     }
                 }],
@@ -55,10 +54,10 @@ class FeishuPusher(Operator):
         }
         try:
             send_to_feishu_with_retry(self.webhook_url, message)
-            logging.info(f"飞书推送成功: {title}")
+            logger.info(f"飞书推送成功: {title}")
             return True
         except Exception as e:
-            logging.error(f"飞书推送失败: {str(e)}")
+            logger.error(f"飞书推送失败: {str(e)}")
             return False
 
     async def process(self, content: List[Any]) -> List[Tuple[Any, bool]]:

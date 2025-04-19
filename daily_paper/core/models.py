@@ -11,8 +11,8 @@ class Paper:
     abstract: str        # 论文摘要
     authors: str   # 作者列表
     category: str        # 论文类别
-    publish_date: date   # 发布日期
-    update_date: date    # 更新日期
+    publish_date: str    # 发布日期
+    update_date: str     # 更新日期
 
 @dataclass
 class PaperWithSummary(Paper):

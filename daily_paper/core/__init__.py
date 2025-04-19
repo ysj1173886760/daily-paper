@@ -2,7 +2,7 @@ from daily_paper.core.operators.base import Operator, OperatorStatus, OperatorNo
 from daily_paper.core.pipeline import DAGPipeline
 from daily_paper.core.models import Paper
 
-from daily_paper.core.operators.datasource import ArxivSource, LocalSource
+from daily_paper.core.operators.datasource import ArxivSource
 from daily_paper.core.operators.processor import (
     LLMSummarizer,
 )
@@ -26,7 +26,6 @@ __all__ = [
     
     # 数据源算子
     'ArxivSource',
-    'LocalSource',
     
     # 处理算子
     'LLMSummarizer',

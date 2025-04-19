@@ -8,6 +8,7 @@ from daily_paper.core.config.base import YamlConfig
 class Config(YamlConfig):
     llm: LLMConfig = LLMConfig()
     storage: StorageConfig = StorageConfig()
+    feishu_webhook_url: str = ""
 
     @classmethod
     def parse(cls, config_path: str):

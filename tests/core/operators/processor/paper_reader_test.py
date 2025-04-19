@@ -46,8 +46,8 @@ async def test_paper_download_and_process(paper_reader):
                 authors="Joel Barmettler, Abraham Bernstein, Luca Rossetto",
                 abstract="none",
                 category="cs.CL",
-                publish_date=date(2025, 4, 10),
-                update_date=date(2025, 4, 10)
+                publish_date=date(2025, 4, 10).strftime("%Y-%m-%d"),
+                update_date=date(2025, 4, 10).strftime("%Y-%m-%d")
             )
         ]
         

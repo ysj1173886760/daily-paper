@@ -2,15 +2,19 @@ from daily_paper.core.pipeline import DAGPipeline
 from daily_paper.core.operators.datasource.arxiv import ArxivSource
 from daily_paper.core.operators.processor.paper_reader import PaperReader
 from daily_paper.core.operators.processor.llm_summarizer import LLMSummarizer
+from daily_paper.core.operators.processor.custom_processor import CustomProcessor
 from daily_paper.core.operators.state.pending import FilterFinishedIDs, MarkIDsAsFinished, InsertPendingIDs
 from daily_paper.core.models import Paper, PaperWithSummary
 from daily_paper.core.config import LLMConfig
+from daily_paper.core.operators.sink.feishu import FeishuPusher
 from daily_paper.core.config import Config
 from daily_paper.core.common import logger
 from daily_paper.core.operators.storage.local_storage import LocalStorageWriter, LocalStorageReader
 import os
 import asyncio
 import argparse
+from typing import Tuple, List, Any
+from dataclasses import asdict
 
 def id_getter(x: Paper):
     return x.id
@@ -56,7 +60,7 @@ async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
     )
 
     def kv_getter(x: PaperWithSummary):
-      return x.id, x.summary
+      return x.id, asdict(x)
 
     pipeline.add_operator(
         name="save_paper_summaries",
@@ -99,17 +103,34 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
         dependencies=["read_paper_summaries"]
     )
 
-    # TODO(ysj): impl me
-    # pipeline.add_operator(
-    #     name="push_paper_summaries",
-    #     operator=FeishuPush(config.feishu), 
-    #     dependencies=["filter_pushed_papers"]
-    # )
+    def title_and_content_getter(x: PaperWithSummary) -> Tuple[str, str]:
+      content = f"**{x.title}**\n"
+      content += f"**更新时间**: {x.update_date}\n\n"
+      content += f"👤 {x.authors}\n\n"
+      content += f"💡 AI总结：{x.summary}...\n\n"
+      content += f"---\n"
+      content += f"📎 [论文原文]({x.url})"
+      return x.title, content
+
+    pipeline.add_operator(
+        name="push_paper_summaries",
+        operator=FeishuPusher(config.feishu_webhook_url, title_and_content_getter), 
+        dependencies=["filter_pushed_papers"]
+    )
+
+    def filter_out_failed_papers(x: List[Tuple[Any, bool]]) -> List[Any]:
+      return [y for y in x if y[1] is True]
+
+    pipeline.add_operator(
+        name="filter_out_push_failed_papers",
+        operator=CustomProcessor(filter_out_failed_papers),
+        dependencies=["push_paper_summaries"]
+    )
 
     pipeline.add_operator(
         name="mark_pushed_papers",
         operator=MarkIDsAsFinished(base_dir=os.path.join(config.storage.base_path, "state"), namespace="push", id_getter=id_getter),
-        dependencies=["push_paper_summaries"]
+        dependencies=["filter_out_push_failed_papers"]
     )
 
     return pipeline
@@ -121,7 +142,6 @@ async def run_paper_pipeline(config_path: str):
     results = await pipeline.execute()
 
     logger.info(f"Pipeline completed with {len(results)} results")
-    logger.info(results)
     return results
 
 if __name__ == "__main__":

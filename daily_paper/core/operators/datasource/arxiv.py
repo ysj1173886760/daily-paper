@@ -73,8 +73,8 @@ class ArxivSource(Operator):
               abstract=paper_abstract,
               authors=paper_authors,
               category=primary_category,
-              publish_date=publish_time,
-              update_date=update_time,
+              publish_date=publish_time.strftime("%Y-%m-%d"),
+              update_date=update_time.strftime("%Y-%m-%d"),
             )
             paper_list.append(arxiv_paper)
 

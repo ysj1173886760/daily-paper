@@ -22,11 +22,71 @@ import asyncio
 import argparse
 from typing import Tuple, List, Any
 from dataclasses import asdict
-
+from daily_paper.core.operators.processor.abstract_based_llm_filter import AbstractBasedLLMFilter
+import logging
 
 def id_getter(x: Paper):
     return x.id
 
+async def create_paper_filter_pipeline(config: Config) -> DAGPipeline:
+    """创建论文过滤pipeline"""
+    pipeline = DAGPipeline()
+
+    pipeline.add_operator(
+        name="arxiv_source",
+        operator=ArxivSource(
+            topic=config.arxiv_topic_list, search_offset=config.arxiv_search_offset, search_limit=config.arxiv_search_limit
+        ),
+        dependencies=None,
+    )
+
+    pipeline.add_operator(
+        name="filter_arxiv_papers",
+        operator=FilterFinishedIDs(
+            base_dir=os.path.join(config.storage.base_path, "state"),
+            namespace="arxiv_llm_filter",
+            id_getter=id_getter,
+        ),
+        dependencies=["arxiv_source"],
+    )
+
+    pipeline.add_operator(
+        name="llm_filter",
+        operator=AbstractBasedLLMFilter(config.llm, config.llm_filter_topic),
+        dependencies=["filter_arxiv_papers"],
+    )
+
+    def kv_getter(x: Tuple[Paper, bool]):
+        filtered = x[1]
+        if not filtered:
+            return x[0].id, asdict(x[0])
+        else:
+            return x[0].id, None
+
+    pipeline.add_operator(
+        name="save_filtered_papers",
+        operator=LocalStorageWriter(
+            storage_dir=os.path.join(config.storage.base_path, "filtered_papers"),
+            storage_namespace="filtered_papers",
+            key_value_getter=kv_getter,
+        ),
+        dependencies=["llm_filter"],
+    )
+
+    def paper_with_filter_status_id_getter(x: Tuple[Paper, bool]):
+        return x[0].id
+
+    pipeline.add_operator(
+        name="mark_filtered_papers",
+        operator=MarkIDsAsFinished(
+            base_dir=os.path.join(config.storage.base_path, "state"),
+            namespace="arxiv_llm_filter",
+            id_getter=paper_with_filter_status_id_getter,  
+        ),
+        dependencies=["save_filtered_papers"],
+    )
+    
+    return pipeline
 
 async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
     """创建论文处理pipeline
@@ -192,11 +252,41 @@ async def run_paper_push_pipeline(config_path: str):
     logger.info(f"Pipeline completed with {len(results)} results")
     return results
 
+async def run_paper_filter_pipeline(config_path: str):
+    config = Config.from_yaml(config_path)
+    pipeline: DAGPipeline = await create_paper_filter_pipeline(config)
+    results = await pipeline.execute()
+    logger.info(f"Pipeline completed with {len(results)} results")
+    return results
+
+async def run_paper_filter_pipeline_with_offset(config_path: str):
+    config = Config.from_yaml(config_path)
+    batch_size = 200
+    for offset in range(0, 10000, batch_size):
+      config.arxiv_search_offset = offset
+      config.arxiv_search_limit = batch_size
+      pipeline: DAGPipeline = await create_paper_filter_pipeline(config)
+      results = await pipeline.execute()
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--config", type=str, default="config.yaml")
     args = args.parse_args()
 
-    asyncio.run(run_paper_summarize_pipeline(args.config))
-    asyncio.run(run_paper_push_pipeline(args.config))
+    # 配置日志记录
+    logging.basicConfig(
+        level=logging.INFO,  # 设置日志级别为 INFO
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),  # 输出到控制台
+        ]
+    )
+
+    arxiv_logger = logging.getLogger('arxiv')
+    arxiv_logger.setLevel(logging.INFO)
+
+
+    # asyncio.run(run_paper_summarize_pipeline(args.config))
+    # asyncio.run(run_paper_push_pipeline(args.config))
+    # asyncio.run(run_paper_filter_pipeline(args.config))
+    asyncio.run(run_paper_filter_pipeline_with_offset(args.config))

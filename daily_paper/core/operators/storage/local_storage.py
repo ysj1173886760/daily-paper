@@ -1,4 +1,4 @@
-from typing import Any, List, Callable, Dict, TypeVar, Tuple
+from typing import Any, List, Callable, Dict, Tuple, Optional
 from pathlib import Path
 import json
 from datetime import datetime
@@ -54,7 +54,7 @@ class LocalStorageWriter(Operator, LocalStorage):
         self,
         storage_dir: str,
         storage_namespace: str,
-        key_value_getter: Callable[[Any], Tuple[str, Any]] = None,
+        key_value_getter: Callable[[Any], Tuple[str, Optional[Any]]] = None,
     ):
         """初始化LocalStorageWriter
 
@@ -84,6 +84,8 @@ class LocalStorageWriter(Operator, LocalStorage):
         # 处理新数据
         for item in items:
             key, value = self.key_value_getter(item)
+            if value is None:
+                continue
             # 更新或添加新数据
             existing_data[key] = {
                 "value": value,

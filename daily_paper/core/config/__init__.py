@@ -12,7 +12,11 @@ class Config(YamlConfig):
     feishu_webhook_url: str = ""
 
     arxiv_topic_list: list[str] = []
-    arxiv_max_results: int = 3
+    arxiv_search_offset: int = 0
+    arxiv_search_limit: int = 100
+
+    enable_llm_filter: bool = False
+    llm_filter_topic: str = ""
 
     @classmethod
     def parse(cls, config_path: str):

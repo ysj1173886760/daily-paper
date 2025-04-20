@@ -4,7 +4,7 @@ from pathlib import Path
 from enum import Enum
 
 from daily_paper.core.operators.base import Operator
-
+from daily_paper.core.common.logger import logger
 
 class IDState(str, Enum):
     """ID的状态枚举"""

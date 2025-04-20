@@ -56,7 +56,7 @@ async def test_arxiv_source_with_offset():
     # papers = await source.process(None)
 
     total_paper_list = []
-    batch_size = 100
+    batch_size = 500
     for offset in range(0, 1000, batch_size):
         source = ArxivSource(topic="\"Memory\" AND \"LLM\"", search_offset=offset, search_limit=batch_size, should_retry_when_empty=True)
         papers = await source.process(None)

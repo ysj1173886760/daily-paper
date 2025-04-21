@@ -18,6 +18,8 @@ class Config(YamlConfig):
     enable_llm_filter: bool = False
     llm_filter_topic: str = ""
 
+    process_batch_size: int = 10
+
     @classmethod
     def parse(cls, config_path: str):
         path = Path(config_path)

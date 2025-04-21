@@ -16,25 +16,26 @@ class LLMSummarizer(Operator):
         """初始化LLMSummarizer
 
         Args:
-            api_key: OpenAI API密钥
-            model: 使用的模型名称
+            llm_config: LLM配置
+            max_concurrent_requests: 最大并发请求数，默认为5
         """
         self.client = openai.AsyncOpenAI(
             api_key=llm_config.api_key, base_url=llm_config.base_url
         )
         self.model = llm_config.model_name
+        self.semaphore = asyncio.Semaphore(llm_config.max_concurrent_requests)
 
     async def summarize_paper(self, paper_text) -> str:
-        # 修正冒号为英文格式，使用标准签名语法
-        prompt = f"用中文帮我介绍一下这篇文章: {paper_text}"
-        summary = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是一个专业的学术论文分析助手。"},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return summary.choices[0].message.content
+        async with self.semaphore:
+            prompt = f"用中文帮我介绍一下这篇文章: {paper_text}"
+            summary = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个专业的学术论文分析助手。"},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return summary.choices[0].message.content
 
     async def process(
         self, papers: list[tuple[Paper, str]]

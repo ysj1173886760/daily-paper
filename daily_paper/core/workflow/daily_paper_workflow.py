@@ -101,14 +101,28 @@ async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
     """
     pipeline = DAGPipeline()
 
-    # 添加数据源算子
-    pipeline.add_operator(
-        name="arxiv_source",
-        operator=ArxivSource(
-            topic=config.arxiv_topic_list, max_results=config.arxiv_max_results
-        ),
-        dependencies=None,
-    )
+    if not config.enable_llm_filter:
+        # 添加数据源算子
+        pipeline.add_operator(
+            name="paper_source",
+            operator=ArxivSource(
+                topic=config.arxiv_topic_list, search_offset=config.arxiv_search_offset, search_limit=config.arxiv_search_limit
+            ),
+            dependencies=None,
+        )
+    else:
+        def convert_to_paper(key: str, value: dict):
+            return Paper(**value)
+
+        pipeline.add_operator(
+            name="paper_source",
+            operator=LocalStorageReader(
+                storage_dir=os.path.join(config.storage.base_path, "filtered_papers"),
+                storage_namespace="filtered_papers",
+                value_reader=convert_to_paper,
+            ),
+            dependencies=None,
+        )
 
     pipeline.add_operator(
         name="filter_pending_ids",
@@ -117,14 +131,20 @@ async def create_paper_summarize_pipeline(config: Config) -> DAGPipeline:
             namespace="arxiv",
             id_getter=id_getter,
         ),
-        dependencies=["arxiv_source"],
+        dependencies=["paper_source"],
+    )
+
+    pipeline.add_operator(
+        name="limit_batch_size",
+        operator=CustomProcessor(lambda x: x[:config.process_batch_size]),
+        dependencies=["filter_pending_ids"],
     )
 
     # only read the unprocessed papers
     pipeline.add_operator(
         name="paper_reader",
         operator=PaperReader(os.path.join(config.storage.base_path, "paper_caches")),
-        dependencies=["filter_pending_ids"],
+        dependencies=["limit_batch_size"],
     )
 
     # 添加论文总结算子
@@ -238,35 +258,34 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
 async def run_paper_summarize_pipeline(config_path: str):
     """运行论文处理pipeline"""
     config = Config.from_yaml(config_path)
-    pipeline: DAGPipeline = await create_paper_summarize_pipeline(config)
-    results = await pipeline.execute()
+    total_results = []
+    # TODO(ysj): use sink to collect results
+    while True:
+      pipeline: DAGPipeline = await create_paper_summarize_pipeline(config)
+      results = await pipeline.execute()
+      logger.info(f"Paper Summarize Pipeline small batch completed with {len(results)} results")
+      total_results.extend(results)
+      if len(results) == 0:
+        break
 
-    logger.info(f"Pipeline completed with {len(results)} results")
-    return results
+    logger.info(f"Paper Summarize Pipeline completed with {len(total_results)} results")
+
+    return total_results
 
 
 async def run_paper_push_pipeline(config_path: str):
     config = Config.from_yaml(config_path)
     pipeline: DAGPipeline = await create_paper_push_pipeline(config)
     results = await pipeline.execute()
-    logger.info(f"Pipeline completed with {len(results)} results")
+    logger.info(f"Paper Push Pipeline completed with {len(results)} results")
     return results
 
 async def run_paper_filter_pipeline(config_path: str):
     config = Config.from_yaml(config_path)
     pipeline: DAGPipeline = await create_paper_filter_pipeline(config)
     results = await pipeline.execute()
-    logger.info(f"Pipeline completed with {len(results)} results")
+    logger.info(f"Paper Filter Pipeline completed with {len(results)} results")
     return results
-
-async def run_paper_filter_pipeline_with_offset(config_path: str):
-    config = Config.from_yaml(config_path)
-    batch_size = 200
-    for offset in range(0, 10000, batch_size):
-      config.arxiv_search_offset = offset
-      config.arxiv_search_limit = batch_size
-      pipeline: DAGPipeline = await create_paper_filter_pipeline(config)
-      results = await pipeline.execute()
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
@@ -286,7 +305,6 @@ if __name__ == "__main__":
     arxiv_logger.setLevel(logging.INFO)
 
 
-    # asyncio.run(run_paper_summarize_pipeline(args.config))
-    # asyncio.run(run_paper_push_pipeline(args.config))
     # asyncio.run(run_paper_filter_pipeline(args.config))
-    asyncio.run(run_paper_filter_pipeline_with_offset(args.config))
+    asyncio.run(run_paper_summarize_pipeline(args.config))
+    asyncio.run(run_paper_push_pipeline(args.config))

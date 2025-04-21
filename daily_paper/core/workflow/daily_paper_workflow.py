@@ -215,6 +215,15 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
         dependencies=["read_paper_summaries"],
     )
 
+    def order_by_update_date(x: List[PaperWithSummary]) -> List[PaperWithSummary]:
+        return sorted(x, key=lambda y: y.update_date)
+
+    pipeline.add_operator(
+        name="order_by_update_date",
+        operator=CustomProcessor(order_by_update_date),
+        dependencies=["filter_pushed_papers"],
+    )
+
     def title_and_content_getter(x: PaperWithSummary) -> Tuple[str, str]:
         title = "📄 新论文推荐"
         content = f"**{x.title}**\n"
@@ -228,7 +237,7 @@ async def create_paper_push_pipeline(config: Config) -> DAGPipeline:
     pipeline.add_operator(
         name="push_paper_summaries",
         operator=FeishuPusher(config.feishu_webhook_url, title_and_content_getter),
-        dependencies=["filter_pushed_papers"],
+        dependencies=["order_by_update_date"],
     )
 
     def filter_out_failed_papers(
@@ -306,5 +315,5 @@ if __name__ == "__main__":
 
 
     # asyncio.run(run_paper_filter_pipeline(args.config))
-    asyncio.run(run_paper_summarize_pipeline(args.config))
+    # asyncio.run(run_paper_summarize_pipeline(args.config))
     asyncio.run(run_paper_push_pipeline(args.config))

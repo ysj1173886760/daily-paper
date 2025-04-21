@@ -61,4 +61,9 @@ class FeishuPusher(Operator):
         Returns:
             List[Tuple[Any, bool]]: 输入的内容和推送结果
         """
-        return [(c, await self.single_content_push_feishu(c)) for c in content]
+        # sequential push
+        result = []
+        for c in content:
+            result.append((c, await self.single_content_push_feishu(c)))
+
+        return result

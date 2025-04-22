@@ -315,5 +315,5 @@ if __name__ == "__main__":
 
 
     # asyncio.run(run_paper_filter_pipeline(args.config))
-    # asyncio.run(run_paper_summarize_pipeline(args.config))
-    asyncio.run(run_paper_push_pipeline(args.config))
+    asyncio.run(run_paper_summarize_pipeline(args.config))
+    # asyncio.run(run_paper_push_pipeline(args.config))

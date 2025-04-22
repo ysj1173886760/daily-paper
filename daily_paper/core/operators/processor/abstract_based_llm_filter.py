@@ -24,6 +24,7 @@ class AbstractBasedLLMFilter(Operator):
         )
         self.model = llm_config.model_name
         self.target_topic = target_topic
+        self.semaphore = asyncio.Semaphore(llm_config.max_concurrent_requests)
 
     async def filter_paper(self, paper: Paper) -> bool:
         # 修正冒号为英文格式，使用标准签名语法
@@ -32,14 +33,15 @@ class AbstractBasedLLMFilter(Operator):
         prompt += f"用户关注的领域是：{self.target_topic}\n"
         prompt += f"论文的摘要：{paper.abstract}\n"
         logger.debug(f"prompt: {prompt}")
-        result = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是一位论文过滤专家，专精于通过论文的摘要判断论文是否属于用户关注的领域。"},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        llm_response = result.choices[0].message.content
+        async with self.semaphore:
+            result = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一位论文过滤专家，专精于通过论文的摘要判断论文是否属于用户关注的领域。"},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            llm_response = result.choices[0].message.content
         
         is_filtered = "NO" in llm_response
         if is_filtered:

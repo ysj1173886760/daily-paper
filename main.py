@@ -17,6 +17,9 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import ast
 import argparse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 ARXIV_URL = "http://arxiv.org/"
 
@@ -481,7 +484,6 @@ def main(query: str,
     filtered_papers = filter_existing_papers(new_papers, meta_file)
 
     save_to_parquet(filtered_papers, meta_file)
-    print(f"保存了{len(filtered_papers)}篇新论文")
     
     # 读取保存的论文数据
     df = pd.read_parquet(meta_file)

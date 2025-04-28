@@ -478,20 +478,16 @@ def main(query: str,
     """主流程函数（参数化版本）"""
 
     # 获取今日论文
-    print("get daily papers...")
     new_papers = get_daily_papers(query, max_results)
 
     # 过滤已存在论文
-    print("filter papers...")
     filtered_papers = filter_existing_papers(new_papers, meta_file)
 
     save_to_parquet(filtered_papers, meta_file)
-    print(f"保存了{len(filtered_papers)}篇新论文")
     
     # 读取保存的论文数据
     df = pd.read_parquet(meta_file)
 
-    print("process papers...")
     # 处理论文并生成摘要
     df = process_papers_and_generate_summaries(lm, df)
 
@@ -502,7 +498,6 @@ def main(query: str,
     
     # df = reset_recent_pushed_status(df, 7)
     
-    print("push to feishu...")
     push_to_feishu(df, meta_file)
     
     # generate_weekly_summary_if_sunday(lm, df)
